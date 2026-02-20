@@ -1,0 +1,11 @@
+services:
+  webguard-instance:
+    build:
+      context: .
+      target: development
+    command: ["go", "run", "./cmd/webguard-instance", "serve"]
+    volumes:
+      - ./:/app
+    environment:
+      - GO_ENV=development
+      - PORT=${PORT:-8080}
