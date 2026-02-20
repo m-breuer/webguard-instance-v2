@@ -34,13 +34,17 @@ func Start(ctx context.Context, address string, logger *log.Logger) error {
 
 func HealthHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+	healthHandler := func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {
 			writer.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte("ok"))
-	})
+	}
+
+	mux.HandleFunc("/", healthHandler)
+	mux.HandleFunc("/health", healthHandler)
+
 	return mux
 }

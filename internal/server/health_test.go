@@ -26,6 +26,22 @@ func TestHealthHandlerGet(t *testing.T) {
 	}
 }
 
+func TestHealthHandlerHealthGet(t *testing.T) {
+	t.Parallel()
+
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	recorder := httptest.NewRecorder()
+
+	HealthHandler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", recorder.Code)
+	}
+	if recorder.Body.String() != "ok" {
+		t.Fatalf("expected body ok, got %q", recorder.Body.String())
+	}
+}
+
 func TestHealthHandlerMethodNotAllowed(t *testing.T) {
 	t.Parallel()
 
