@@ -25,7 +25,7 @@ type serveFunc func(logger *log.Logger, service monitoringService, cfg config.Co
 func main() {
 	logger := log.New(os.Stdout, "", 0)
 	cfg := config.FromEnv()
-	coreClient := core.NewClient(cfg.WebGuardCoreAPIURL, cfg.WebGuardCoreAPIKey)
+	coreClient := core.NewClient(cfg.WebGuardCoreAPIURL, cfg.WebGuardCoreAPIKey, cfg.WebGuardLocation)
 	service := runner.New(coreClient, cfg, logger)
 
 	exitCode := run(os.Args[1:], logger, cfg, service, runServe, os.Stderr)
