@@ -1,89 +1,102 @@
-# WebGuard Instance v2 (Go)
+# WebGuard Instance (New Version)
 
-This repository is a Go implementation of the WebGuard worker instance.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-It keeps compatibility with the existing PHP worker contract by preserving:
+> 💡 **System Architecture Note:** This repository contains the **Worker Node**. It requires a running WebGuard Core instance to receive monitoring jobs and report results.
 
-- Core API endpoint paths:
+This repository is the new version of the WebGuard instance service.  
+It is built to stay compatible with the current core integration while improving runtime speed and simplifying deployment.
+
+## Features
+
+- **Core-Compatible API Contract**
   - `GET /api/v1/internal/monitorings`
   - `POST /api/v1/internal/monitoring-responses`
   - `POST /api/v1/internal/ssl-results`
-- Header name: `X-API-KEY`
-- Query/body field names and monitoring type/status values
-- Command name:
-  - `monitoring`
-- The combined run executes response and SSL phases in parallel.
-- 5-minute scheduling semantics in `serve` mode
+  - `X-API-KEY` header authentication
+- **Parallel Monitoring Execution**
+  - Response and SSL phases run in parallel
+  - Worker-based parallel processing for monitoring jobs
+- **Simple Operations**
+  - Docker-first local and production setup
+  - Built-in health endpoints: `GET /` and `GET /health`
+- **Predictable Scheduling**
+  - Combined monitoring run every 5 minutes
 
-## Run commands directly
+## Getting Started
 
-```bash
-go run ./cmd/webguard-instance serve
-go run ./cmd/webguard-instance monitoring
-```
+### Prerequisites
 
-## Docker
+- Docker
+- Docker Compose
+- A running WebGuard Core instance
 
-Before starting containers, create your runtime env file:
+### Installation
 
-```bash
-cp .env.example .env
-```
+1. **Clone the repository**
+   ```bash
+   git clone git@github.com:m-breuer/webguard-instance-v2.git
+   cd webguard-instance-v2
+   ```
 
-Production compose:
+2. **Configure environment**
+   ```bash
+   cp .env.example .env
+   ```
+   Required values:
+   - `WEBGUARD_LOCATION`
+   - `WEBGUARD_CORE_API_KEY`
+   - `WEBGUARD_CORE_API_URL`
 
-```bash
-./start-prod.sh
-# or:
-docker compose -f compose.yml up -d --build
-```
+3. **Start services**
+   Local development:
+   ```bash
+   ./start-dev.sh
+   ```
 
-Local development compose (source mounted, runs development stage):
+   Production-style:
+   ```bash
+   ./start-prod.sh
+   ```
 
-```bash
-./start-dev.sh
-# or:
-docker compose -f compose.yml -f docker-compose.override.yml up -d --build
-```
+4. **Verify health**
+   ```bash
+   curl http://localhost:8080/health
+   ```
 
-Stop services:
+## Useful Commands
 
-```bash
-docker compose -f compose.yml down
-docker compose -f compose.yml -f docker-compose.override.yml down
-```
+- Run one-off monitoring:
+  ```bash
+  docker compose -f compose.yml run --rm webguard-instance monitoring
+  ```
+- Stop production compose:
+  ```bash
+  docker compose -f compose.yml down
+  ```
+- Stop local development compose:
+  ```bash
+  docker compose -f compose.yml -f docker-compose.override.yml down
+  ```
 
-Run one-off compatible commands in container:
+## Configuration
 
-```bash
-docker compose -f compose.yml run --rm webguard-instance monitoring
-```
-
-## Environment variables
-
-See `.env.example`. Compatibility-critical variables:
+Main integration settings:
 
 - `WEBGUARD_LOCATION`
 - `WEBGUARD_CORE_API_KEY`
 - `WEBGUARD_CORE_API_URL`
 
-Worker tuning:
+Runtime settings:
 
-- `QUEUE_DEFAULT_WORKERS`
+- `QUEUE_DEFAULT_WORKERS` (default: `3`)
+- `PORT` (default: `8080`)
 
-HTTP health endpoint:
+See `.env.example` for full defaults.
 
-- `PORT` (default: `8080`) exposes `GET /`
-
-## GitHub Actions
-
-Workflows included:
+## CI/CD
 
 - `.github/workflows/ci.yml`
-  - `gofmt` check
-  - `go vet`
-  - `go test`
-  - `go build`
-  - production Docker build validation
+  - formatting, linting, tests, binary build, container build check
 - `.github/workflows/docker-image.yml`
-  - builds and publishes multi-arch images to GHCR on `main` and `v*` tags
+  - multi-arch image build and publish to GHCR on `main` and `v*` tags
