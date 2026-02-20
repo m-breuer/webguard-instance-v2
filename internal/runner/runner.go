@@ -23,11 +23,9 @@ import (
 	"github.com/m-breuer/webguard-instance-v2/internal/target"
 )
 
-const (
-	fixedHTTPRetryTimes = 1
-	fixedHTTPRetryDelay = 250 * time.Millisecond
-	fixedHTTPMaxRedirects = 5
-)
+const fixedHTTPRetryTimes = 1
+const fixedHTTPRetryDelay = 250 * time.Millisecond
+const fixedHTTPMaxRedirects = 5
 
 type CoreClient interface {
 	GetMonitorings(ctx context.Context, location string, types []monitor.Type) ([]monitor.Monitoring, error)
