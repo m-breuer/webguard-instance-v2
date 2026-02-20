@@ -13,7 +13,7 @@ It is built to stay compatible with the current core integration while improving
   - `GET /api/v1/internal/monitorings`
   - `POST /api/v1/internal/monitoring-responses`
   - `POST /api/v1/internal/ssl-results`
-  - `X-API-KEY` header authentication
+  - `X-INSTANCE-CODE` + `X-API-KEY` header authentication
 - **Parallel Monitoring Execution**
   - Response and SSL phases run in parallel
   - Worker-based parallel processing for monitoring jobs
@@ -61,7 +61,7 @@ It is built to stay compatible with the current core integration while improving
 
 4. **Verify health**
    ```bash
-   curl http://localhost:8080/health
+   curl http://localhost:8080/
    ```
 
 ## Useful Commands
@@ -83,7 +83,7 @@ It is built to stay compatible with the current core integration while improving
 
 Main integration settings:
 
-- `WEBGUARD_LOCATION`
+- `WEBGUARD_LOCATION` (instance code used for `location` query and `X-INSTANCE-CODE` header)
 - `WEBGUARD_CORE_API_KEY`
 - `WEBGUARD_CORE_API_URL`
 

@@ -15,9 +15,10 @@ import (
 )
 
 type Client struct {
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
+	baseURL      string
+	apiKey       string
+	instanceCode string
+	httpClient   *http.Client
 }
 
 type HTTPStatusError struct {
@@ -29,10 +30,11 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("core API returned status %d", e.StatusCode)
 }
 
-func NewClient(baseURL, apiKey string) *Client {
+func NewClient(baseURL, apiKey, instanceCode string) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		apiKey:       strings.TrimSpace(apiKey),
+		instanceCode: strings.TrimSpace(instanceCode),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -47,16 +49,52 @@ func (c *Client) SetHTTPClient(httpClient *http.Client) {
 }
 
 func (c *Client) GetMonitorings(ctx context.Context, location string, types []monitor.Type) ([]monitor.Monitoring, error) {
-	query := make(url.Values)
-	if location != "" {
-		query.Set("location", location)
+	location = strings.TrimSpace(location)
+	if location == "" {
+		return nil, fmt.Errorf("WEBGUARD_LOCATION is empty")
 	}
-	if len(types) > 0 {
-		values := make([]string, 0, len(types))
-		for _, value := range types {
-			values = append(values, string(value))
+	if c.instanceCode == "" {
+		return nil, fmt.Errorf("WEBGUARD_LOCATION is empty")
+	}
+	if location != c.instanceCode {
+		return nil, fmt.Errorf("location must match instance code")
+	}
+
+	if len(types) == 0 {
+		return c.getMonitorings(ctx, location, "")
+	}
+
+	seenTypes := make(map[monitor.Type]struct{}, len(types))
+	seenMonitorings := make(map[string]struct{})
+	monitorings := make([]monitor.Monitoring, 0)
+
+	for _, monitoringType := range types {
+		if _, ok := seenTypes[monitoringType]; ok {
+			continue
 		}
-		query.Set("types", strings.Join(values, ","))
+		seenTypes[monitoringType] = struct{}{}
+
+		items, err := c.getMonitorings(ctx, location, monitoringType)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if _, ok := seenMonitorings[item.ID]; ok {
+				continue
+			}
+			seenMonitorings[item.ID] = struct{}{}
+			monitorings = append(monitorings, item)
+		}
+	}
+
+	return monitorings, nil
+}
+
+func (c *Client) getMonitorings(ctx context.Context, location string, monitoringType monitor.Type) ([]monitor.Monitoring, error) {
+	query := make(url.Values)
+	query.Set("location", location)
+	if monitoringType != "" {
+		query.Set("type", string(monitoringType))
 	}
 
 	request, err := c.newRequest(ctx, http.MethodGet, "/api/v1/internal/monitorings", query, nil)
@@ -116,9 +154,14 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 		return nil, err
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	if c.apiKey != "" {
 		request.Header.Set("X-API-KEY", c.apiKey)
+	}
+	if c.instanceCode != "" {
+		request.Header.Set("X-INSTANCE-CODE", c.instanceCode)
 	}
 
 	return request, nil
