@@ -224,12 +224,12 @@ func TestCrawlMonitoringSSLValid(t *testing.T) {
 
 	r := New(nil, config.Config{}, log.New(io.Discard, "", 0))
 	payload := r.crawlMonitoringSSL(monitor.Monitoring{
-		ID:     12,
+		ID:     "12",
 		Target: server.URL,
 	})
 
-	if payload.MonitoringID != 12 {
-		t.Fatalf("unexpected monitoring id: %d", payload.MonitoringID)
+	if payload.MonitoringID != "12" {
+		t.Fatalf("unexpected monitoring id: %s", payload.MonitoringID)
 	}
 	if !payload.IsValid {
 		t.Fatalf("expected certificate to be valid for httptest TLS server")
@@ -245,7 +245,7 @@ func TestRunSSLPostsResults(t *testing.T) {
 	client := &fakeCoreClient{
 		sslMonitorings: []monitor.Monitoring{
 			{
-				ID:     3,
+				ID:     "3",
 				Target: "https://127.0.0.1:" + strconv.Itoa(1),
 			},
 		},
@@ -267,8 +267,8 @@ func TestRunSSLPostsResults(t *testing.T) {
 	if len(postedSSL) != 1 {
 		t.Fatalf("expected one ssl result post, got %d", len(postedSSL))
 	}
-	if postedSSL[0].MonitoringID != 3 {
-		t.Fatalf("unexpected monitoring id: %d", postedSSL[0].MonitoringID)
+	if postedSSL[0].MonitoringID != "3" {
+		t.Fatalf("unexpected monitoring id: %s", postedSSL[0].MonitoringID)
 	}
 }
 

@@ -20,8 +20,8 @@ func TestMonitoringUnmarshalWithNumericID(t *testing.T) {
 		t.Fatalf("unexpected unmarshal error: %v", err)
 	}
 
-	if monitoring.ID != 42 {
-		t.Fatalf("expected id 42, got %d", monitoring.ID)
+	if monitoring.ID != "42" {
+		t.Fatalf("expected id 42, got %s", monitoring.ID)
 	}
 }
 
@@ -41,8 +41,8 @@ func TestMonitoringUnmarshalWithStringID(t *testing.T) {
 		t.Fatalf("unexpected unmarshal error: %v", err)
 	}
 
-	if monitoring.ID != 42 {
-		t.Fatalf("expected id 42, got %d", monitoring.ID)
+	if monitoring.ID != "42" {
+		t.Fatalf("expected id 42, got %s", monitoring.ID)
 	}
 	if monitoring.Timeout != 10 {
 		t.Fatalf("expected timeout 10, got %d", monitoring.Timeout)
@@ -60,7 +60,7 @@ func TestMonitoringUnmarshalWithInvalidID(t *testing.T) {
 
 	var monitoring Monitoring
 	err := json.Unmarshal([]byte(`{
-		"id": "abc",
+		"id": {"nested": true},
 		"type": "http",
 		"target": "https://example.com"
 	}`), &monitoring)

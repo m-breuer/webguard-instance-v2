@@ -76,7 +76,7 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 	client := &fakeCoreClient{
 		responseMonitorings: []monitor.Monitoring{
 			{
-				ID:                7,
+				ID:                "7",
 				MaintenanceActive: true,
 			},
 		},
@@ -133,8 +133,8 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 		t.Fatalf("expected 1 posted response, got %d", len(postedResponses))
 	}
 	payload := postedResponses[0]
-	if payload.MonitoringID != 7 {
-		t.Fatalf("expected monitoring_id 7, got %d", payload.MonitoringID)
+	if payload.MonitoringID != "7" {
+		t.Fatalf("expected monitoring_id 7, got %s", payload.MonitoringID)
 	}
 	if payload.Status != monitor.StatusUnknown {
 		t.Fatalf("expected unknown status, got %s", payload.Status)

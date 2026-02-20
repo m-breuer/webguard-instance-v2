@@ -83,7 +83,7 @@ func (r *Runner) runResponse(ctx context.Context) error {
 					Status:       status,
 					ResponseTime: responseTime,
 				}); err != nil {
-					r.logger.Printf("Failed to post response result (monitoring_id=%d): %v", monitoring.ID, err)
+					r.logger.Printf("Failed to post response result (monitoring_id=%s): %v", monitoring.ID, err)
 				}
 			}
 		}()
@@ -97,7 +97,7 @@ func (r *Runner) runResponse(ctx context.Context) error {
 				Status:       monitor.StatusUnknown,
 				ResponseTime: nil,
 			}); err != nil {
-				r.logger.Printf("Failed to post maintenance response result (monitoring_id=%d): %v", monitoring.ID, err)
+				r.logger.Printf("Failed to post maintenance response result (monitoring_id=%s): %v", monitoring.ID, err)
 			}
 			continue
 		}
@@ -147,7 +147,7 @@ func (r *Runner) runSSL(ctx context.Context) error {
 			for monitoring := range jobs {
 				payload := r.crawlMonitoringSSL(monitoring)
 				if err := r.client.PostSSLResult(ctx, payload); err != nil {
-					r.logger.Printf("Failed to post SSL result (monitoring_id=%d): %v", monitoring.ID, err)
+					r.logger.Printf("Failed to post SSL result (monitoring_id=%s): %v", monitoring.ID, err)
 				}
 			}
 		}()

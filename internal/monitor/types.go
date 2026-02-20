@@ -36,8 +36,8 @@ const (
 )
 
 type Monitoring struct {
-	ID   int64 `json:"id"`
-	Type Type  `json:"type"`
+	ID   string `json:"id"`
+	Type Type   `json:"type"`
 
 	Target string `json:"target"`
 
@@ -84,7 +84,7 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	id, err := parseInt64Flexible(raw.ID, "id")
+	id, err := parseStringFlexible(raw.ID, "id")
 	if err != nil {
 		return err
 	}
@@ -127,17 +127,36 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 }
 
 type MonitoringResponsePayload struct {
-	MonitoringID int64    `json:"monitoring_id"`
+	MonitoringID string   `json:"monitoring_id"`
 	Status       Status   `json:"status"`
 	ResponseTime *float64 `json:"response_time"`
 }
 
 type SSLResultPayload struct {
-	MonitoringID int64      `json:"monitoring_id"`
+	MonitoringID string     `json:"monitoring_id"`
 	IsValid      bool       `json:"is_valid"`
 	ExpiresAt    *time.Time `json:"expires_at"`
 	Issuer       *string    `json:"issuer"`
 	IssuedAt     *time.Time `json:"issued_at"`
+}
+
+func parseStringFlexible(value any, field string) (string, error) {
+	switch typed := value.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return strings.TrimSpace(typed), nil
+	case float64:
+		return strconv.FormatInt(int64(typed), 10), nil
+	case int64:
+		return strconv.FormatInt(typed, 10), nil
+	case int:
+		return strconv.Itoa(typed), nil
+	case json.Number:
+		return typed.String(), nil
+	default:
+		return "", fmt.Errorf("invalid %s type: %T", field, value)
+	}
 }
 
 func parseInt64Flexible(value any, field string) (int64, error) {

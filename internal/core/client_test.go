@@ -74,8 +74,8 @@ func TestGetMonitoringsSupportsStringIDs(t *testing.T) {
 	if len(monitorings) != 1 {
 		t.Fatalf("expected 1 monitoring, got %d", len(monitorings))
 	}
-	if monitorings[0].ID != 123 {
-		t.Fatalf("expected id 123, got %d", monitorings[0].ID)
+	if monitorings[0].ID != "123" {
+		t.Fatalf("expected id 123, got %s", monitorings[0].ID)
 	}
 	if monitorings[0].Timeout != 10 {
 		t.Fatalf("expected timeout 10, got %d", monitorings[0].Timeout)
@@ -101,7 +101,7 @@ func TestPostMonitoringResponsePayloadShape(t *testing.T) {
 
 	client := NewClient(server.URL, "secret-key")
 	err := client.PostMonitoringResponse(context.Background(), monitor.MonitoringResponsePayload{
-		MonitoringID: 42,
+		MonitoringID: "42",
 		Status:       monitor.StatusUnknown,
 		ResponseTime: nil,
 	})
@@ -109,7 +109,7 @@ func TestPostMonitoringResponsePayloadShape(t *testing.T) {
 		t.Fatalf("PostMonitoringResponse failed: %v", err)
 	}
 
-	if body["monitoring_id"] != float64(42) {
+	if body["monitoring_id"] != "42" {
 		t.Fatalf("expected monitoring_id=42, got %#v", body["monitoring_id"])
 	}
 	if body["status"] != "unknown" {
@@ -140,7 +140,7 @@ func TestPostSSLResultPayloadShape(t *testing.T) {
 	client := NewClient(server.URL, "secret-key")
 	now := time.Now().UTC()
 	err := client.PostSSLResult(context.Background(), monitor.SSLResultPayload{
-		MonitoringID: 10,
+		MonitoringID: "10",
 		IsValid:      true,
 		ExpiresAt:    &now,
 		Issuer:       ptr("issuer"),
@@ -150,7 +150,7 @@ func TestPostSSLResultPayloadShape(t *testing.T) {
 		t.Fatalf("PostSSLResult failed: %v", err)
 	}
 
-	if body["monitoring_id"] != float64(10) {
+	if body["monitoring_id"] != "10" {
 		t.Fatalf("expected monitoring_id=10, got %#v", body["monitoring_id"])
 	}
 	if body["is_valid"] != true {
