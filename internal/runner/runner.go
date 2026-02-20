@@ -26,6 +26,7 @@ import (
 const (
 	fixedHTTPRetryTimes = 1
 	fixedHTTPRetryDelay = 250 * time.Millisecond
+	fixedHTTPMaxRedirects = 5
 )
 
 type CoreClient interface {
@@ -235,7 +236,7 @@ func (r *Runner) handleHTTPMonitoring(ctx context.Context, monitoring monitor.Mo
 	if err != nil {
 		return monitor.StatusDown, nil
 	}
-	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+	if statusCode >= http.StatusOK && statusCode < http.StatusBadRequest {
 		responseTime := roundMilliseconds(time.Since(start))
 		return monitor.StatusUp, &responseTime
 	}
@@ -322,6 +323,12 @@ func (r *Runner) performHTTPRequest(ctx context.Context, monitoring monitor.Moni
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true, //nolint:gosec // Keep PHP compatibility (withoutVerifying)
 			},
+		},
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= fixedHTTPMaxRedirects {
+				return fmt.Errorf("stopped after %d redirects", fixedHTTPMaxRedirects)
+			}
+			return nil
 		},
 	}
 	if monitoring.Timeout > 0 {

@@ -137,6 +137,60 @@ func TestPerformHTTPRequestPOSTBody(t *testing.T) {
 	}
 }
 
+func TestPerformHTTPRequestFollowsRedirectAcrossHosts(t *testing.T) {
+	t.Parallel()
+
+	targetServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("redirect-ok"))
+	}))
+	defer targetServer.Close()
+
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, targetServer.URL, http.StatusMovedPermanently)
+	}))
+	defer redirectServer.Close()
+
+	r := New(nil, config.Config{}, log.New(io.Discard, "", 0))
+	statusCode, body, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
+		Target:     redirectServer.URL,
+		Timeout:    2,
+		HTTPMethod: monitor.HTTPMethodGet,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("expected final status 200 after redirect, got %d", statusCode)
+	}
+	if body != "redirect-ok" {
+		t.Fatalf("expected redirected response body, got %q", body)
+	}
+}
+
+func TestHandleHTTPMonitoringTreatsRedirectStatusAsUp(t *testing.T) {
+	t.Parallel()
+
+	redirectOnlyServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusMovedPermanently)
+	}))
+	defer redirectOnlyServer.Close()
+
+	r := New(nil, config.Config{}, log.New(io.Discard, "", 0))
+	status, responseTime := r.handleHTTPMonitoring(context.Background(), monitor.Monitoring{
+		Target:     redirectOnlyServer.URL,
+		Timeout:    2,
+		HTTPMethod: monitor.HTTPMethodGet,
+	})
+
+	if status != monitor.StatusUp {
+		t.Fatalf("expected up for redirect response, got %s", status)
+	}
+	if responseTime == nil {
+		t.Fatalf("expected response time for redirect response")
+	}
+}
+
 func TestPerformHTTPRequestRetriesOnTransportError(t *testing.T) {
 	t.Parallel()
 
