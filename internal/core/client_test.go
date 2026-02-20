@@ -57,6 +57,31 @@ func TestGetMonitoringsIncludesHeaderAndQuery(t *testing.T) {
 	}
 }
 
+func TestGetMonitoringsSupportsStringIDs(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`[{"id":"123","type":"http","target":"https://example.com","timeout":"10"}]`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "secret-key")
+	monitorings, err := client.GetMonitorings(context.Background(), "de-1", nil)
+	if err != nil {
+		t.Fatalf("GetMonitorings failed: %v", err)
+	}
+	if len(monitorings) != 1 {
+		t.Fatalf("expected 1 monitoring, got %d", len(monitorings))
+	}
+	if monitorings[0].ID != 123 {
+		t.Fatalf("expected id 123, got %d", monitorings[0].ID)
+	}
+	if monitorings[0].Timeout != 10 {
+		t.Fatalf("expected timeout 10, got %d", monitorings[0].Timeout)
+	}
+}
+
 func TestPostMonitoringResponsePayloadShape(t *testing.T) {
 	t.Parallel()
 
