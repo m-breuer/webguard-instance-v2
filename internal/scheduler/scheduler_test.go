@@ -27,9 +27,10 @@ func TestRunEveryFiveMinutesReturnsOnCanceledContext(t *testing.T) {
 	cancel()
 
 	done := make(chan struct{})
+	taskCalled := make(chan struct{}, 1)
 	go func() {
 		RunEveryFiveMinutes(ctx, log.New(io.Discard, "", 0), func(context.Context) error {
-			t.Fatalf("task should not run on already canceled context")
+			taskCalled <- struct{}{}
 			return nil
 		})
 		close(done)
@@ -39,5 +40,11 @@ func TestRunEveryFiveMinutesReturnsOnCanceledContext(t *testing.T) {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("scheduler did not return after context cancellation")
+	}
+
+	select {
+	case <-taskCalled:
+		t.Fatalf("task should not run on already canceled context")
+	default:
 	}
 }
