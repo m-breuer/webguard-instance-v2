@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -209,32 +210,117 @@ func TestPerformHTTPRequestRetriesOnTransportError(t *testing.T) {
 	}
 }
 
-func TestHandlePingMonitoring(t *testing.T) {
-	t.Parallel()
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to create listener: %v", err)
-	}
-	defer listener.Close()
-
-	go func() {
-		connection, acceptErr := listener.Accept()
-		if acceptErr == nil {
-			_ = connection.Close()
-		}
-	}()
-
-	port := listener.Addr().(*net.TCPAddr).Port
-	status, responseTime := handlePingMonitoring(monitor.Monitoring{
-		Target: "127.0.0.1",
-		Port:   port,
+func TestHandlePingMonitoringSupportsHostnameAndIPTargets(t *testing.T) {
+	originalExecutor := pingExecutor
+	t.Cleanup(func() {
+		pingExecutor = originalExecutor
 	})
-	if status != monitor.StatusUp {
-		t.Fatalf("expected up, got %s", status)
+
+	testCases := []struct {
+		name   string
+		target string
+	}{
+		{name: "hostname", target: "example.com"},
+		{name: "ipv4", target: "8.8.8.8"},
+		{name: "ipv6", target: "2001:4860:4860::8888"},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			var receivedHost string
+			var receivedTimeout int
+			pingExecutor = func(_ context.Context, host string, timeoutSeconds int) ([]byte, error) {
+				receivedHost = host
+				receivedTimeout = timeoutSeconds
+				return []byte("64 bytes from " + host + ": icmp_seq=1 ttl=57 time=12.34 ms"), nil
+			}
+
+			status, responseTime := handlePingMonitoring(monitor.Monitoring{
+				Target:  testCase.target,
+				Timeout: 2,
+			})
+
+			if status != monitor.StatusUp {
+				t.Fatalf("expected up, got %s", status)
+			}
+			if responseTime == nil {
+				t.Fatalf("expected response time")
+			}
+			if *responseTime != 12.34 {
+				t.Fatalf("expected response time 12.34, got %v", *responseTime)
+			}
+			if receivedHost != testCase.target {
+				t.Fatalf("expected ping target %q, got %q", testCase.target, receivedHost)
+			}
+			if receivedTimeout != 2 {
+				t.Fatalf("expected timeout 2, got %d", receivedTimeout)
+			}
+		})
+	}
+}
+
+func TestHandlePingMonitoringDown(t *testing.T) {
+	originalExecutor := pingExecutor
+	t.Cleanup(func() {
+		pingExecutor = originalExecutor
+	})
+
+	pingExecutor = func(_ context.Context, _ string, _ int) ([]byte, error) {
+		return []byte("100% packet loss"), errors.New("exit status 1")
+	}
+
+	status, responseTime := handlePingMonitoring(monitor.Monitoring{
+		Target: "8.8.8.8",
+	})
+	if status != monitor.StatusDown {
+		t.Fatalf("expected down, got %s", status)
 	}
 	if responseTime == nil {
-		t.Fatalf("expected response time")
+		t.Fatalf("expected fallback response time")
+	}
+}
+
+func TestBuildPingCommand(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		host     string
+		timeout  int
+		expected []string
+	}{
+		{
+			name:     "hostname",
+			host:     "example.com",
+			timeout:  5,
+			expected: []string{"-c", "1", "-W", "5", "example.com"},
+		},
+		{
+			name:     "ipv4",
+			host:     "8.8.8.8",
+			timeout:  3,
+			expected: []string{"-c", "1", "-W", "3", "-4", "8.8.8.8"},
+		},
+		{
+			name:     "ipv6",
+			host:     "2001:4860:4860::8888",
+			timeout:  4,
+			expected: []string{"-c", "1", "-W", "4", "-6", "2001:4860:4860::8888"},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			command, args := buildPingCommand(testCase.host, testCase.timeout)
+			if command != "ping" {
+				t.Fatalf("expected ping command, got %q", command)
+			}
+			if !reflect.DeepEqual(args, testCase.expected) {
+				t.Fatalf("unexpected ping args: got %#v want %#v", args, testCase.expected)
+			}
+		})
 	}
 }
 

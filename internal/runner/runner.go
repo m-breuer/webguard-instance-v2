@@ -12,7 +12,10 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os/exec"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +29,11 @@ import (
 const fixedHTTPRetryTimes = 1
 const fixedHTTPRetryDelay = 250 * time.Millisecond
 const fixedHTTPMaxRedirects = 5
+const fixedPingTimeoutSeconds = 5
+
+var pingLatencyPattern = regexp.MustCompile(`time[=<]([0-9]+(?:\.[0-9]+)?)\s*ms`)
+
+var pingExecutor = runPingCommand
 
 type CoreClient interface {
 	GetMonitorings(ctx context.Context, location string, types []monitor.Type) ([]monitor.Monitoring, error)
@@ -255,24 +263,71 @@ func (r *Runner) handleKeywordMonitoring(ctx context.Context, monitoring monitor
 }
 
 func handlePingMonitoring(monitoring monitor.Monitoring) (monitor.Status, *float64) {
-	port := monitoring.Port
-	if port <= 0 {
-		port = 80
-	}
-	address, err := target.TCPAddress(monitoring.Target, port)
+	host, err := target.Host(monitoring.Target)
 	if err != nil {
 		return monitor.StatusDown, nil
 	}
 
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
-	responseTime := roundMilliseconds(time.Since(start))
-	if err != nil {
-		return monitor.StatusDown, &responseTime
+	timeoutSeconds := fixedPingTimeoutSeconds
+	if monitoring.Timeout > 0 {
+		timeoutSeconds = monitoring.Timeout
 	}
-	_ = conn.Close()
 
-	return monitor.StatusUp, &responseTime
+	start := time.Now()
+	output, err := pingExecutor(context.Background(), host, timeoutSeconds)
+	responseTime := parsePingLatency(output)
+	if responseTime == nil {
+		elapsed := roundMilliseconds(time.Since(start))
+		responseTime = &elapsed
+	}
+	if err != nil {
+		return monitor.StatusDown, responseTime
+	}
+
+	return monitor.StatusUp, responseTime
+}
+
+func runPingCommand(ctx context.Context, host string, timeoutSeconds int) ([]byte, error) {
+	command, args := buildPingCommand(host, timeoutSeconds)
+	cmd := exec.CommandContext(ctx, command, args...)
+	return cmd.CombinedOutput()
+}
+
+func buildPingCommand(host string, timeoutSeconds int) (string, []string) {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = fixedPingTimeoutSeconds
+	}
+
+	args := []string{
+		"-c", "1",
+		"-W", strconv.Itoa(timeoutSeconds),
+	}
+
+	if parsedIP := net.ParseIP(host); parsedIP != nil {
+		if parsedIP.To4() == nil {
+			args = append(args, "-6")
+		} else {
+			args = append(args, "-4")
+		}
+	}
+
+	args = append(args, host)
+	return "ping", args
+}
+
+func parsePingLatency(output []byte) *float64 {
+	matches := pingLatencyPattern.FindSubmatch(bytes.ToLower(output))
+	if len(matches) < 2 {
+		return nil
+	}
+
+	parsed, err := strconv.ParseFloat(string(matches[1]), 64)
+	if err != nil {
+		return nil
+	}
+
+	rounded := math.Round(parsed*1000) / 1000
+	return &rounded
 }
 
 func handlePortMonitoring(monitoring monitor.Monitoring) (monitor.Status, *float64) {
