@@ -23,6 +23,30 @@ func TestTCPAddressInvalidPort(t *testing.T) {
 	}
 }
 
+func TestHostParsesRawIPv4(t *testing.T) {
+	t.Parallel()
+
+	host, err := Host("8.8.8.8")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if host != "8.8.8.8" {
+		t.Fatalf("expected 8.8.8.8, got %q", host)
+	}
+}
+
+func TestHostParsesRawIPv6(t *testing.T) {
+	t.Parallel()
+
+	host, err := Host("2001:4860:4860::8888")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if host != "2001:4860:4860::8888" {
+		t.Fatalf("expected 2001:4860:4860::8888, got %q", host)
+	}
+}
+
 func TestSSLAddressAndServerNameDefaultsTo443(t *testing.T) {
 	t.Parallel()
 

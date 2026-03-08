@@ -19,6 +19,14 @@ func TCPAddress(rawTarget string, port int) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
+func Host(rawTarget string) (string, error) {
+	host, _, err := extractHostPort(rawTarget)
+	if err != nil {
+		return "", err
+	}
+	return host, nil
+}
+
 func SSLAddressAndServerName(rawTarget string) (string, string, error) {
 	host, parsedPort, err := extractHostPort(rawTarget)
 	if err != nil {
