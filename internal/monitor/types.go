@@ -127,9 +127,10 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 }
 
 type MonitoringResponsePayload struct {
-	MonitoringID string   `json:"monitoring_id"`
-	Status       Status   `json:"status"`
-	ResponseTime *float64 `json:"response_time"`
+	MonitoringID   string   `json:"monitoring_id"`
+	Status         Status   `json:"status"`
+	ResponseTime   *float64 `json:"response_time"`
+	HTTPStatusCode *int     `json:"http_status_code"`
 }
 
 type SSLResultPayload struct {

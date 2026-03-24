@@ -84,11 +84,20 @@ func (r *Runner) runResponse(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
-				status, responseTime := r.crawlResponseMonitoring(ctx, monitoring)
+				status, responseTime, httpStatusCode := r.crawlResponseMonitoring(ctx, monitoring)
+				r.logger.Printf(
+					"Response monitoring result computed (monitoring_id=%s type=%s status=%s response_time=%v http_status_code=%v)",
+					monitoring.ID,
+					monitoring.Type,
+					status,
+					pointerFloat64Value(responseTime),
+					pointerIntValue(httpStatusCode),
+				)
 				if err := r.client.PostMonitoringResponse(ctx, monitor.MonitoringResponsePayload{
-					MonitoringID: monitoring.ID,
-					Status:       status,
-					ResponseTime: responseTime,
+					MonitoringID:   monitoring.ID,
+					Status:         status,
+					ResponseTime:   responseTime,
+					HTTPStatusCode: httpStatusCode,
 				}); err != nil {
 					r.logger.Printf("Failed to post response result (monitoring_id=%s): %v", monitoring.ID, err)
 				}
@@ -100,9 +109,10 @@ func (r *Runner) runResponse(ctx context.Context) error {
 		if monitoring.MaintenanceActive {
 			skippedMaintenance++
 			if err := r.client.PostMonitoringResponse(ctx, monitor.MonitoringResponsePayload{
-				MonitoringID: monitoring.ID,
-				Status:       monitor.StatusUnknown,
-				ResponseTime: nil,
+				MonitoringID:   monitoring.ID,
+				Status:         monitor.StatusUnknown,
+				ResponseTime:   nil,
+				HTTPStatusCode: nil,
 			}); err != nil {
 				r.logger.Printf("Failed to post maintenance response result (monitoring_id=%s): %v", monitoring.ID, err)
 			}
@@ -221,45 +231,49 @@ func (r *Runner) logFetchError(err error) {
 	}
 }
 
-func (r *Runner) crawlResponseMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64) {
+func (r *Runner) crawlResponseMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
 	switch monitoring.Type {
 	case monitor.TypeHTTP:
 		return r.handleHTTPMonitoring(ctx, monitoring)
 	case monitor.TypePing:
-		return handlePingMonitoring(monitoring)
+		status, responseTime := handlePingMonitoring(monitoring)
+		return status, responseTime, nil
 	case monitor.TypeKeyword:
 		return r.handleKeywordMonitoring(ctx, monitoring)
 	case monitor.TypePort:
-		return handlePortMonitoring(monitoring)
+		status, responseTime := handlePortMonitoring(monitoring)
+		return status, responseTime, nil
 	default:
-		return monitor.StatusUnknown, nil
+		return monitor.StatusUnknown, nil, nil
 	}
 }
 
-func (r *Runner) handleHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64) {
+func (r *Runner) handleHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
 	start := time.Now()
 	statusCode, _, err := r.performHTTPRequest(ctx, monitoring)
 	if err != nil {
-		return monitor.StatusDown, nil
+		return monitor.StatusDown, nil, nil
 	}
+	httpStatusCode := intPointer(statusCode)
 	if statusCode >= http.StatusOK && statusCode < http.StatusBadRequest {
 		responseTime := roundMilliseconds(time.Since(start))
-		return monitor.StatusUp, &responseTime
+		return monitor.StatusUp, &responseTime, httpStatusCode
 	}
-	return monitor.StatusDown, nil
+	return monitor.StatusDown, nil, httpStatusCode
 }
 
-func (r *Runner) handleKeywordMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64) {
+func (r *Runner) handleKeywordMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
 	start := time.Now()
-	_, body, err := r.performHTTPRequest(ctx, monitoring)
+	statusCode, body, err := r.performHTTPRequest(ctx, monitoring)
 	if err != nil {
-		return monitor.StatusDown, nil
+		return monitor.StatusDown, nil, nil
 	}
+	httpStatusCode := intPointer(statusCode)
 	if strings.Contains(body, monitoring.Keyword) {
 		responseTime := roundMilliseconds(time.Since(start))
-		return monitor.StatusUp, &responseTime
+		return monitor.StatusUp, &responseTime, httpStatusCode
 	}
-	return monitor.StatusDown, nil
+	return monitor.StatusDown, nil, httpStatusCode
 }
 
 func handlePingMonitoring(monitoring monitor.Monitoring) (monitor.Status, *float64) {
@@ -546,4 +560,22 @@ func normalizeBody(rawBody any) []byte {
 func roundMilliseconds(duration time.Duration) float64 {
 	value := float64(duration.Microseconds()) / 1000
 	return math.Round(value*100) / 100
+}
+
+func intPointer(value int) *int {
+	return &value
+}
+
+func pointerFloat64Value(value *float64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func pointerIntValue(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
