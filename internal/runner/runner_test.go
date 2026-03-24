@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -142,6 +144,9 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 	if payload.ResponseTime != nil {
 		t.Fatalf("expected nil response_time, got %v", *payload.ResponseTime)
 	}
+	if payload.HTTPStatusCode != nil {
+		t.Fatalf("expected nil http_status_code, got %v", *payload.HTTPStatusCode)
+	}
 }
 
 func TestRunMonitoringRequestsNonPingTypesForSSL(t *testing.T) {
@@ -181,6 +186,69 @@ func TestRunMonitoringRequestsNonPingTypesForSSL(t *testing.T) {
 
 	if !foundSSLFetch {
 		t.Fatalf("ssl types fetch missing")
+	}
+}
+
+func TestRunResponsePostsHTTPStatusCodeForHTTPAndKeywordMonitoring(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+		_, _ = writer.Write([]byte("needle"))
+	}))
+	defer server.Close()
+
+	client := &fakeCoreClient{
+		responseMonitorings: []monitor.Monitoring{
+			{
+				ID:         "http-monitoring",
+				Type:       monitor.TypeHTTP,
+				Target:     server.URL,
+				Timeout:    2,
+				HTTPMethod: monitor.HTTPMethodGet,
+			},
+			{
+				ID:         "keyword-monitoring",
+				Type:       monitor.TypeKeyword,
+				Target:     server.URL,
+				Timeout:    2,
+				HTTPMethod: monitor.HTTPMethodGet,
+				Keyword:    "needle",
+			},
+		},
+	}
+
+	cfg := config.Config{
+		WebGuardLocation:    "de-1",
+		QueueDefaultWorkers: 1,
+	}
+	runner := New(client, cfg, log.New(io.Discard, "", 0))
+
+	if err := runner.runResponse(context.Background()); err != nil {
+		t.Fatalf("runResponse failed: %v", err)
+	}
+
+	postedResponses := client.snapshotPostedResponses()
+	if len(postedResponses) != 2 {
+		t.Fatalf("expected 2 posted responses, got %d", len(postedResponses))
+	}
+
+	payloadByID := make(map[string]monitor.MonitoringResponsePayload, len(postedResponses))
+	for _, payload := range postedResponses {
+		payloadByID[payload.MonitoringID] = payload
+	}
+
+	for _, monitoringID := range []string{"http-monitoring", "keyword-monitoring"} {
+		payload, ok := payloadByID[monitoringID]
+		if !ok {
+			t.Fatalf("expected payload for %s", monitoringID)
+		}
+		if payload.HTTPStatusCode == nil {
+			t.Fatalf("expected http_status_code for %s", monitoringID)
+		}
+		if *payload.HTTPStatusCode != http.StatusCreated {
+			t.Fatalf("expected http_status_code=%d for %s, got %d", http.StatusCreated, monitoringID, *payload.HTTPStatusCode)
+		}
 	}
 }
 

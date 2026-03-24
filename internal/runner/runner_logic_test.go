@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -178,7 +179,7 @@ func TestHandleHTTPMonitoringTreatsRedirectStatusAsUp(t *testing.T) {
 	defer redirectOnlyServer.Close()
 
 	r := New(nil, config.Config{}, log.New(io.Discard, "", 0))
-	status, responseTime := r.handleHTTPMonitoring(context.Background(), monitor.Monitoring{
+	status, responseTime, httpStatusCode := r.handleHTTPMonitoring(context.Background(), monitor.Monitoring{
 		Target:     redirectOnlyServer.URL,
 		Timeout:    2,
 		HTTPMethod: monitor.HTTPMethodGet,
@@ -189,6 +190,43 @@ func TestHandleHTTPMonitoringTreatsRedirectStatusAsUp(t *testing.T) {
 	}
 	if responseTime == nil {
 		t.Fatalf("expected response time for redirect response")
+	}
+	if httpStatusCode == nil {
+		t.Fatalf("expected http status code")
+	}
+	if *httpStatusCode != http.StatusMovedPermanently {
+		t.Fatalf("expected http status code 301, got %d", *httpStatusCode)
+	}
+}
+
+func TestHandleKeywordMonitoringReturnsHTTPStatusCodeWhenKeywordMissing(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusTeapot)
+		_, _ = writer.Write([]byte("different-content"))
+	}))
+	defer server.Close()
+
+	r := New(nil, config.Config{}, log.New(io.Discard, "", 0))
+	status, responseTime, httpStatusCode := r.handleKeywordMonitoring(context.Background(), monitor.Monitoring{
+		Target:     server.URL,
+		Timeout:    2,
+		HTTPMethod: monitor.HTTPMethodGet,
+		Keyword:    "needle",
+	})
+
+	if status != monitor.StatusDown {
+		t.Fatalf("expected down when keyword is missing, got %s", status)
+	}
+	if responseTime != nil {
+		t.Fatalf("expected nil response time when keyword is missing, got %v", *responseTime)
+	}
+	if httpStatusCode == nil {
+		t.Fatalf("expected http status code")
+	}
+	if *httpStatusCode != http.StatusTeapot {
+		t.Fatalf("expected http status code %d, got %d", http.StatusTeapot, *httpStatusCode)
 	}
 }
 
@@ -343,7 +381,7 @@ func TestCrawlResponseMonitoringUnknownType(t *testing.T) {
 	t.Parallel()
 
 	r := New(nil, config.Config{}, log.New(io.Discard, "", 0))
-	status, responseTime := r.crawlResponseMonitoring(context.Background(), monitor.Monitoring{
+	status, responseTime, httpStatusCode := r.crawlResponseMonitoring(context.Background(), monitor.Monitoring{
 		Type: monitor.Type("custom"),
 	})
 	if status != monitor.StatusUnknown {
@@ -351,6 +389,57 @@ func TestCrawlResponseMonitoringUnknownType(t *testing.T) {
 	}
 	if responseTime != nil {
 		t.Fatalf("expected nil response time for unknown type")
+	}
+	if httpStatusCode != nil {
+		t.Fatalf("expected nil http status code for unknown type")
+	}
+}
+
+func TestCrawlResponseMonitoringPortReturnsNilHTTPStatusCode(t *testing.T) {
+	t.Parallel()
+
+	server, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to open listener: %v", err)
+	}
+	defer server.Close()
+
+	_, portRaw, err := net.SplitHostPort(server.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to split listener address: %v", err)
+	}
+	port, err := strconv.Atoi(portRaw)
+	if err != nil {
+		t.Fatalf("failed to parse listener port: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, acceptErr := server.Accept()
+		if acceptErr == nil && conn != nil {
+			_ = conn.Close()
+		}
+	}()
+
+	r := New(nil, config.Config{}, log.New(io.Discard, "", 0))
+	status, _, httpStatusCode := r.crawlResponseMonitoring(context.Background(), monitor.Monitoring{
+		Type:   monitor.TypePort,
+		Target: "127.0.0.1",
+		Port:   port,
+	})
+
+	if status != monitor.StatusUp {
+		t.Fatalf("expected up status for open port, got %s", status)
+	}
+	if httpStatusCode != nil {
+		t.Fatalf("expected nil http status code for port monitoring")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("port monitor did not connect to test listener")
 	}
 }
 

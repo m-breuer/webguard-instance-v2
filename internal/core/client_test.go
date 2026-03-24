@@ -169,9 +169,10 @@ func TestPostMonitoringResponsePayloadShape(t *testing.T) {
 
 	client := NewClient(server.URL, "secret-key", "de-1")
 	err := client.PostMonitoringResponse(context.Background(), monitor.MonitoringResponsePayload{
-		MonitoringID: "42",
-		Status:       monitor.StatusUnknown,
-		ResponseTime: nil,
+		MonitoringID:   "42",
+		Status:         monitor.StatusUnknown,
+		ResponseTime:   nil,
+		HTTPStatusCode: nil,
 	})
 	if err != nil {
 		t.Fatalf("PostMonitoringResponse failed: %v", err)
@@ -188,6 +189,41 @@ func TestPostMonitoringResponsePayloadShape(t *testing.T) {
 	}
 	if value, ok := body["response_time"]; !ok || value != nil {
 		t.Fatalf("expected response_time=null, got %#v", body["response_time"])
+	}
+	if value, ok := body["http_status_code"]; !ok || value != nil {
+		t.Fatalf("expected http_status_code=null, got %#v", body["http_status_code"])
+	}
+}
+
+func TestPostMonitoringResponsePayloadIncludesHTTPStatusCode(t *testing.T) {
+	t.Parallel()
+
+	var body map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/internal/monitoring-responses" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode payload: %v", err)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "secret-key", "de-1")
+	err := client.PostMonitoringResponse(context.Background(), monitor.MonitoringResponsePayload{
+		MonitoringID:   "42",
+		Status:         monitor.StatusDown,
+		ResponseTime:   nil,
+		HTTPStatusCode: intPtr(503),
+	})
+	if err != nil {
+		t.Fatalf("PostMonitoringResponse failed: %v", err)
+	}
+
+	if body["http_status_code"] != float64(503) {
+		t.Fatalf("expected http_status_code=503, got %#v", body["http_status_code"])
 	}
 }
 
@@ -305,5 +341,9 @@ func TestGetMonitoringsLocationMustMatchInstanceCode(t *testing.T) {
 }
 
 func ptr(value string) *string {
+	return &value
+}
+
+func intPtr(value int) *int {
 	return &value
 }
