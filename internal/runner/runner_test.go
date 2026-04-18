@@ -1,11 +1,13 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,7 +41,7 @@ func (f *fakeCoreClient) GetMonitorings(_ context.Context, location string, type
 	})
 	f.mu.Unlock()
 
-	if len(types) == 0 {
+	if len(types) == len(responseMonitoringTypes) {
 		return append([]monitor.Monitoring(nil), f.responseMonitorings...), nil
 	}
 
@@ -72,6 +74,12 @@ func (f *fakeCoreClient) snapshotPostedResponses() []monitor.MonitoringResponseP
 	return append([]monitor.MonitoringResponsePayload(nil), f.postedResponses...)
 }
 
+func (f *fakeCoreClient) snapshotPostedSSL() []monitor.SSLResultPayload {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]monitor.SSLResultPayload(nil), f.postedSSL...)
+}
+
 func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 	t.Parallel()
 
@@ -79,6 +87,7 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 		responseMonitorings: []monitor.Monitoring{
 			{
 				ID:                "7",
+				Type:              monitor.TypeHTTP,
 				MaintenanceActive: true,
 			},
 		},
@@ -107,7 +116,11 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 			t.Fatalf("expected location de-1, got %q", call.location)
 		}
 
-		if len(call.types) == 0 {
+		if len(call.types) == 4 &&
+			call.types[0] == monitor.TypeHTTP &&
+			call.types[1] == monitor.TypePing &&
+			call.types[2] == monitor.TypeKeyword &&
+			call.types[3] == monitor.TypePort {
 			foundResponseFetch = true
 			continue
 		}
@@ -176,6 +189,13 @@ func TestRunMonitoringRequestsNonPingTypesForSSL(t *testing.T) {
 		if call.location != "us-1" {
 			t.Fatalf("expected location us-1, got %q", call.location)
 		}
+		if len(call.types) == 4 &&
+			call.types[0] == monitor.TypeHTTP &&
+			call.types[1] == monitor.TypePing &&
+			call.types[2] == monitor.TypeKeyword &&
+			call.types[3] == monitor.TypePort {
+			continue
+		}
 		if len(call.types) == 3 &&
 			call.types[0] == monitor.TypeHTTP &&
 			call.types[1] == monitor.TypeKeyword &&
@@ -186,6 +206,51 @@ func TestRunMonitoringRequestsNonPingTypesForSSL(t *testing.T) {
 
 	if !foundSSLFetch {
 		t.Fatalf("ssl types fetch missing")
+	}
+}
+
+func TestRunMonitoringSkipsHeartbeatMonitoringsWithoutPostingResults(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCoreClient{
+		responseMonitorings: []monitor.Monitoring{
+			{
+				ID:   "hb-response",
+				Type: monitor.TypeHeartbeat,
+			},
+		},
+		sslMonitorings: []monitor.Monitoring{
+			{
+				ID:   "hb-ssl",
+				Type: monitor.TypeHeartbeat,
+			},
+		},
+	}
+
+	var logs bytes.Buffer
+	cfg := config.Config{
+		WebGuardLocation:    "de-1",
+		QueueDefaultWorkers: 1,
+	}
+	runner := New(client, cfg, log.New(&logs, "", 0))
+
+	if err := runner.RunMonitoring(context.Background()); err != nil {
+		t.Fatalf("RunMonitoring failed: %v", err)
+	}
+
+	if postedResponses := client.snapshotPostedResponses(); len(postedResponses) != 0 {
+		t.Fatalf("expected no posted response payloads, got %d", len(postedResponses))
+	}
+	if postedSSL := client.snapshotPostedSSL(); len(postedSSL) != 0 {
+		t.Fatalf("expected no posted ssl payloads, got %d", len(postedSSL))
+	}
+
+	logOutput := logs.String()
+	if !strings.Contains(logOutput, "Skipping passive/unsupported response monitoring (monitoring_id=hb-response type=heartbeat)") {
+		t.Fatalf("expected response skip log, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "Skipping passive/unsupported SSL monitoring (monitoring_id=hb-ssl type=heartbeat)") {
+		t.Fatalf("expected ssl skip log, got %q", logOutput)
 	}
 }
 
@@ -258,9 +323,9 @@ type parallelPhasesClient struct {
 }
 
 func (p *parallelPhasesClient) GetMonitorings(_ context.Context, _ string, types []monitor.Type) ([]monitor.Monitoring, error) {
-	phase := "response"
-	if len(types) > 0 {
-		phase = "ssl"
+	phase := "ssl"
+	if len(types) == len(responseMonitoringTypes) {
+		phase = "response"
 	}
 	p.started <- phase
 	<-p.release
