@@ -475,6 +475,7 @@ func TestRunSSLPostsResults(t *testing.T) {
 		sslMonitorings: []monitor.Monitoring{
 			{
 				ID:     "3",
+				Type:   monitor.TypeHTTP,
 				Target: "https://127.0.0.1:" + strconv.Itoa(1),
 			},
 		},

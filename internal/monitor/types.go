@@ -11,10 +11,11 @@ import (
 type Type string
 
 const (
-	TypeHTTP    Type = "http"
-	TypePing    Type = "ping"
-	TypeKeyword Type = "keyword"
-	TypePort    Type = "port"
+	TypeHTTP      Type = "http"
+	TypePing      Type = "ping"
+	TypeKeyword   Type = "keyword"
+	TypePort      Type = "port"
+	TypeHeartbeat Type = "heartbeat"
 )
 
 type Status string
@@ -53,6 +54,10 @@ type Monitoring struct {
 	Keyword string `json:"keyword"`
 	Port    int    `json:"port"`
 
+	HeartbeatIntervalMinutes *int       `json:"heartbeat_interval_minutes"`
+	HeartbeatGraceMinutes    *int       `json:"heartbeat_grace_minutes"`
+	HeartbeatLastPingAt      *time.Time `json:"heartbeat_last_ping_at"`
+
 	MaintenanceActive bool `json:"maintenance_active"`
 }
 
@@ -76,6 +81,10 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 		Keyword string `json:"keyword"`
 		Port    any    `json:"port"`
 
+		HeartbeatIntervalMinutes any `json:"heartbeat_interval_minutes"`
+		HeartbeatGraceMinutes    any `json:"heartbeat_grace_minutes"`
+		HeartbeatLastPingAt      any `json:"heartbeat_last_ping_at"`
+
 		MaintenanceActive any `json:"maintenance_active"`
 	}
 
@@ -94,6 +103,18 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	port, err := parseIntFlexible(raw.Port, "port")
+	if err != nil {
+		return err
+	}
+	heartbeatIntervalMinutes, err := parseOptionalIntFlexible(raw.HeartbeatIntervalMinutes, "heartbeat_interval_minutes")
+	if err != nil {
+		return err
+	}
+	heartbeatGraceMinutes, err := parseOptionalIntFlexible(raw.HeartbeatGraceMinutes, "heartbeat_grace_minutes")
+	if err != nil {
+		return err
+	}
+	heartbeatLastPingAt, err := parseTimeFlexible(raw.HeartbeatLastPingAt, "heartbeat_last_ping_at")
 	if err != nil {
 		return err
 	}
@@ -119,6 +140,10 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 
 		Keyword: raw.Keyword,
 		Port:    port,
+
+		HeartbeatIntervalMinutes: heartbeatIntervalMinutes,
+		HeartbeatGraceMinutes:    heartbeatGraceMinutes,
+		HeartbeatLastPingAt:      heartbeatLastPingAt,
 
 		MaintenanceActive: maintenanceActive,
 	}
@@ -197,6 +222,41 @@ func parseIntFlexible(value any, field string) (int, error) {
 		return 0, err
 	}
 	return int(parsed), nil
+}
+
+func parseOptionalIntFlexible(value any, field string) (*int, error) {
+	if value == nil {
+		return nil, nil
+	}
+
+	parsed, err := parseIntFlexible(value, field)
+	if err != nil {
+		return nil, err
+	}
+
+	return &parsed, nil
+}
+
+func parseTimeFlexible(value any, field string) (*time.Time, error) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return nil, nil
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, trimmed)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", field, err)
+		}
+		return &parsed, nil
+	case time.Time:
+		parsed := typed.UTC()
+		return &parsed, nil
+	default:
+		return nil, fmt.Errorf("invalid %s type: %T", field, value)
+	}
 }
 
 func parseBoolFlexible(value any, field string) (bool, error) {

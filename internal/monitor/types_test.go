@@ -3,6 +3,7 @@ package monitor
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestMonitoringUnmarshalWithNumericID(t *testing.T) {
@@ -66,5 +67,37 @@ func TestMonitoringUnmarshalWithInvalidID(t *testing.T) {
 	}`), &monitoring)
 	if err == nil {
 		t.Fatalf("expected error for invalid id")
+	}
+}
+
+func TestMonitoringUnmarshalHeartbeatMonitoring(t *testing.T) {
+	t.Parallel()
+
+	var monitoring Monitoring
+	err := json.Unmarshal([]byte(`{
+		"id": "hb-42",
+		"type": "heartbeat",
+		"target": "scheduler:nightly-job",
+		"heartbeat_interval_minutes": "15",
+		"heartbeat_grace_minutes": 5,
+		"heartbeat_last_ping_at": "2026-04-18T10:15:00Z",
+		"maintenance_active": false
+	}`), &monitoring)
+	if err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+
+	if monitoring.Type != TypeHeartbeat {
+		t.Fatalf("expected type heartbeat, got %s", monitoring.Type)
+	}
+	if monitoring.HeartbeatIntervalMinutes == nil || *monitoring.HeartbeatIntervalMinutes != 15 {
+		t.Fatalf("expected heartbeat_interval_minutes=15, got %#v", monitoring.HeartbeatIntervalMinutes)
+	}
+	if monitoring.HeartbeatGraceMinutes == nil || *monitoring.HeartbeatGraceMinutes != 5 {
+		t.Fatalf("expected heartbeat_grace_minutes=5, got %#v", monitoring.HeartbeatGraceMinutes)
+	}
+	expectedLastPingAt := time.Date(2026, 4, 18, 10, 15, 0, 0, time.UTC)
+	if monitoring.HeartbeatLastPingAt == nil || !monitoring.HeartbeatLastPingAt.Equal(expectedLastPingAt) {
+		t.Fatalf("expected heartbeat_last_ping_at=%s, got %#v", expectedLastPingAt, monitoring.HeartbeatLastPingAt)
 	}
 }

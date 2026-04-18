@@ -35,6 +35,19 @@ var pingLatencyPattern = regexp.MustCompile(`time[=<]([0-9]+(?:\.[0-9]+)?)\s*ms`
 
 var pingExecutor = runPingCommand
 
+var responseMonitoringTypes = []monitor.Type{
+	monitor.TypeHTTP,
+	monitor.TypePing,
+	monitor.TypeKeyword,
+	monitor.TypePort,
+}
+
+var sslMonitoringTypes = []monitor.Type{
+	monitor.TypeHTTP,
+	monitor.TypeKeyword,
+	monitor.TypePort,
+}
+
 type CoreClient interface {
 	GetMonitorings(ctx context.Context, location string, types []monitor.Type) ([]monitor.Monitoring, error)
 	PostMonitoringResponse(ctx context.Context, payload monitor.MonitoringResponsePayload) error
@@ -61,7 +74,7 @@ func New(client CoreClient, cfg config.Config, logger *log.Logger) *Runner {
 func (r *Runner) runResponse(ctx context.Context) error {
 	r.logger.Println("Dispatching response monitoring jobs...")
 
-	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, nil)
+	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, responseMonitoringTypes)
 	if err != nil {
 		r.logFetchError(err)
 		return err
@@ -74,6 +87,7 @@ func (r *Runner) runResponse(ctx context.Context) error {
 
 	dispatched := 0
 	skippedMaintenance := 0
+	skippedUnsupported := 0
 
 	jobs := make(chan monitor.Monitoring)
 	var workers sync.WaitGroup
@@ -106,6 +120,16 @@ func (r *Runner) runResponse(ctx context.Context) error {
 	}
 
 	for _, monitoring := range monitorings {
+		if !supportsResponseChecks(monitoring.Type) {
+			skippedUnsupported++
+			r.logger.Printf(
+				"Skipping passive/unsupported response monitoring (monitoring_id=%s type=%s)",
+				monitoring.ID,
+				monitoring.Type,
+			)
+			continue
+		}
+
 		if monitoring.MaintenanceActive {
 			skippedMaintenance++
 			if err := r.client.PostMonitoringResponse(ctx, monitor.MonitoringResponsePayload{
@@ -126,10 +150,11 @@ func (r *Runner) runResponse(ctx context.Context) error {
 	workers.Wait()
 
 	r.logger.Printf(
-		"Response monitoring dispatch done. total=%d dispatched=%d skipped_maintenance=%d",
+		"Response monitoring dispatch done. total=%d dispatched=%d skipped_maintenance=%d skipped_unsupported=%d",
 		len(monitorings),
 		dispatched,
 		skippedMaintenance,
+		skippedUnsupported,
 	)
 
 	return nil
@@ -138,8 +163,7 @@ func (r *Runner) runResponse(ctx context.Context) error {
 func (r *Runner) runSSL(ctx context.Context) error {
 	r.logger.Println("Dispatching SSL monitoring jobs...")
 
-	types := []monitor.Type{monitor.TypeHTTP, monitor.TypeKeyword, monitor.TypePort}
-	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, types)
+	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, sslMonitoringTypes)
 	if err != nil {
 		r.logFetchError(err)
 		return err
@@ -152,6 +176,7 @@ func (r *Runner) runSSL(ctx context.Context) error {
 
 	dispatched := 0
 	skippedMaintenance := 0
+	skippedUnsupported := 0
 
 	jobs := make(chan monitor.Monitoring)
 	var workers sync.WaitGroup
@@ -171,6 +196,16 @@ func (r *Runner) runSSL(ctx context.Context) error {
 	}
 
 	for _, monitoring := range monitorings {
+		if !supportsSSLChecks(monitoring.Type) {
+			skippedUnsupported++
+			r.logger.Printf(
+				"Skipping passive/unsupported SSL monitoring (monitoring_id=%s type=%s)",
+				monitoring.ID,
+				monitoring.Type,
+			)
+			continue
+		}
+
 		if monitoring.MaintenanceActive {
 			skippedMaintenance++
 			continue
@@ -182,10 +217,11 @@ func (r *Runner) runSSL(ctx context.Context) error {
 	workers.Wait()
 
 	r.logger.Printf(
-		"SSL monitoring dispatch done. total=%d dispatched=%d skipped_maintenance=%d",
+		"SSL monitoring dispatch done. total=%d dispatched=%d skipped_maintenance=%d skipped_unsupported=%d",
 		len(monitorings),
 		dispatched,
 		skippedMaintenance,
+		skippedUnsupported,
 	)
 
 	return nil
@@ -243,8 +279,28 @@ func (r *Runner) crawlResponseMonitoring(ctx context.Context, monitoring monitor
 	case monitor.TypePort:
 		status, responseTime := handlePortMonitoring(monitoring)
 		return status, responseTime, nil
+	case monitor.TypeHeartbeat:
+		return monitor.StatusUnknown, nil, nil
 	default:
 		return monitor.StatusUnknown, nil, nil
+	}
+}
+
+func supportsResponseChecks(monitoringType monitor.Type) bool {
+	switch monitoringType {
+	case monitor.TypeHTTP, monitor.TypePing, monitor.TypeKeyword, monitor.TypePort:
+		return true
+	default:
+		return false
+	}
+}
+
+func supportsSSLChecks(monitoringType monitor.Type) bool {
+	switch monitoringType {
+	case monitor.TypeHTTP, monitor.TypeKeyword, monitor.TypePort:
+		return true
+	default:
+		return false
 	}
 }
 
