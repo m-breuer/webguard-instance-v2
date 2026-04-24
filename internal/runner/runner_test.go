@@ -26,11 +26,13 @@ type fakeCoreClient struct {
 
 	responseMonitorings []monitor.Monitoring
 	sslMonitorings      []monitor.Monitoring
+	domainMonitorings   []monitor.Monitoring
 
 	calls []getMonitoringsCall
 
 	postedResponses []monitor.MonitoringResponsePayload
 	postedSSL       []monitor.SSLResultPayload
+	postedDomains   []monitor.DomainResultPayload
 }
 
 func (f *fakeCoreClient) GetMonitorings(_ context.Context, location string, types []monitor.Type) ([]monitor.Monitoring, error) {
@@ -43,6 +45,9 @@ func (f *fakeCoreClient) GetMonitorings(_ context.Context, location string, type
 
 	if len(types) == len(responseMonitoringTypes) {
 		return append([]monitor.Monitoring(nil), f.responseMonitorings...), nil
+	}
+	if len(types) == len(domainExpirationMonitoringTypes) && types[0] == monitor.TypeDomainExpiration {
+		return append([]monitor.Monitoring(nil), f.domainMonitorings...), nil
 	}
 
 	return append([]monitor.Monitoring(nil), f.sslMonitorings...), nil
@@ -58,6 +63,13 @@ func (f *fakeCoreClient) PostMonitoringResponse(_ context.Context, payload monit
 func (f *fakeCoreClient) PostSSLResult(_ context.Context, payload monitor.SSLResultPayload) error {
 	f.mu.Lock()
 	f.postedSSL = append(f.postedSSL, payload)
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeCoreClient) PostDomainResult(_ context.Context, payload monitor.DomainResultPayload) error {
+	f.mu.Lock()
+	f.postedDomains = append(f.postedDomains, payload)
 	f.mu.Unlock()
 	return nil
 }
@@ -78,6 +90,12 @@ func (f *fakeCoreClient) snapshotPostedSSL() []monitor.SSLResultPayload {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]monitor.SSLResultPayload(nil), f.postedSSL...)
+}
+
+func (f *fakeCoreClient) snapshotPostedDomains() []monitor.DomainResultPayload {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]monitor.DomainResultPayload(nil), f.postedDomains...)
 }
 
 func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
@@ -105,12 +123,13 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 	}
 
 	calls := client.snapshotCalls()
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 monitoring fetch calls, got %d", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 monitoring fetch calls, got %d", len(calls))
 	}
 
 	var foundResponseFetch bool
 	var foundSSLFetch bool
+	var foundDomainFetch bool
 	for _, call := range calls {
 		if call.location != "de-1" {
 			t.Fatalf("expected location de-1, got %q", call.location)
@@ -133,6 +152,11 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 			continue
 		}
 
+		if len(call.types) == 1 && call.types[0] == monitor.TypeDomainExpiration {
+			foundDomainFetch = true
+			continue
+		}
+
 		t.Fatalf("unexpected type filter: %#v", call.types)
 	}
 
@@ -141,6 +165,9 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 	}
 	if !foundSSLFetch {
 		t.Fatalf("ssl fetch call missing")
+	}
+	if !foundDomainFetch {
+		t.Fatalf("domain expiration fetch call missing")
 	}
 
 	postedResponses := client.snapshotPostedResponses()
@@ -180,8 +207,8 @@ func TestRunMonitoringRequestsNonPingTypesForSSL(t *testing.T) {
 	}
 
 	calls := client.snapshotCalls()
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 monitoring fetch calls, got %d", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 monitoring fetch calls, got %d", len(calls))
 	}
 
 	var foundSSLFetch bool
@@ -201,7 +228,13 @@ func TestRunMonitoringRequestsNonPingTypesForSSL(t *testing.T) {
 			call.types[1] == monitor.TypeKeyword &&
 			call.types[2] == monitor.TypePort {
 			foundSSLFetch = true
+			continue
 		}
+		if len(call.types) == 1 && call.types[0] == monitor.TypeDomainExpiration {
+			continue
+		}
+
+		t.Fatalf("unexpected type filter: %#v", call.types)
 	}
 
 	if !foundSSLFetch {
@@ -327,6 +360,9 @@ func (p *parallelPhasesClient) GetMonitorings(_ context.Context, _ string, types
 	if len(types) == len(responseMonitoringTypes) {
 		phase = "response"
 	}
+	if len(types) == len(domainExpirationMonitoringTypes) && types[0] == monitor.TypeDomainExpiration {
+		phase = "domain"
+	}
 	p.started <- phase
 	<-p.release
 	return []monitor.Monitoring{}, nil
@@ -340,11 +376,15 @@ func (p *parallelPhasesClient) PostSSLResult(_ context.Context, _ monitor.SSLRes
 	return nil
 }
 
+func (p *parallelPhasesClient) PostDomainResult(_ context.Context, _ monitor.DomainResultPayload) error {
+	return nil
+}
+
 func TestRunMonitoringRunsPhasesInParallel(t *testing.T) {
 	t.Parallel()
 
 	client := &parallelPhasesClient{
-		started: make(chan string, 2),
+		started: make(chan string, 3),
 		release: make(chan struct{}),
 	}
 
@@ -362,12 +402,12 @@ func TestRunMonitoringRunsPhasesInParallel(t *testing.T) {
 
 	timeout := time.After(500 * time.Millisecond)
 	startedPhases := map[string]bool{}
-	for len(startedPhases) < 2 {
+	for len(startedPhases) < 3 {
 		select {
 		case phase := <-client.started:
 			startedPhases[phase] = true
 		case <-timeout:
-			t.Fatalf("expected both phases to start in parallel, got: %#v", startedPhases)
+			t.Fatalf("expected all phases to start in parallel, got: %#v", startedPhases)
 		}
 	}
 

@@ -22,6 +22,7 @@ import (
 
 	"github.com/m-breuer/webguard-instance-v2/internal/config"
 	"github.com/m-breuer/webguard-instance-v2/internal/core"
+	"github.com/m-breuer/webguard-instance-v2/internal/domainlookup"
 	"github.com/m-breuer/webguard-instance-v2/internal/monitor"
 	"github.com/m-breuer/webguard-instance-v2/internal/target"
 )
@@ -48,16 +49,26 @@ var sslMonitoringTypes = []monitor.Type{
 	monitor.TypePort,
 }
 
+var domainExpirationMonitoringTypes = []monitor.Type{
+	monitor.TypeDomainExpiration,
+}
+
 type CoreClient interface {
 	GetMonitorings(ctx context.Context, location string, types []monitor.Type) ([]monitor.Monitoring, error)
 	PostMonitoringResponse(ctx context.Context, payload monitor.MonitoringResponsePayload) error
 	PostSSLResult(ctx context.Context, payload monitor.SSLResultPayload) error
+	PostDomainResult(ctx context.Context, payload monitor.DomainResultPayload) error
+}
+
+type DomainLookup interface {
+	Lookup(ctx context.Context, target string) (domainlookup.Result, error)
 }
 
 type Runner struct {
-	client CoreClient
-	cfg    config.Config
-	logger *log.Logger
+	client       CoreClient
+	cfg          config.Config
+	logger       *log.Logger
+	domainLookup DomainLookup
 }
 
 func New(client CoreClient, cfg config.Config, logger *log.Logger) *Runner {
@@ -65,9 +76,10 @@ func New(client CoreClient, cfg config.Config, logger *log.Logger) *Runner {
 		logger = log.New(io.Discard, "", 0)
 	}
 	return &Runner{
-		client: client,
-		cfg:    cfg,
-		logger: logger,
+		client:       client,
+		cfg:          cfg,
+		logger:       logger,
+		domainLookup: domainlookup.New(10 * time.Second),
 	}
 }
 
@@ -227,31 +239,131 @@ func (r *Runner) runSSL(ctx context.Context) error {
 	return nil
 }
 
+func (r *Runner) runDomainExpiration(ctx context.Context) error {
+	r.logger.Println("Dispatching domain expiration monitoring jobs...")
+
+	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, domainExpirationMonitoringTypes)
+	if err != nil {
+		r.logFetchError(err)
+		return err
+	}
+
+	if len(monitorings) == 0 {
+		r.logger.Println("No active domain expiration monitoring found.")
+		return nil
+	}
+
+	dispatched := 0
+	skippedMaintenance := 0
+	skippedUnsupported := 0
+
+	jobs := make(chan monitor.Monitoring)
+	var workers sync.WaitGroup
+
+	workerCount := max(1, r.cfg.QueueDefaultWorkers)
+	for i := 0; i < workerCount; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for monitoring := range jobs {
+				status, domainPayload, hasDomainPayload := r.crawlDomainExpiration(ctx, monitoring)
+				r.logger.Printf(
+					"Domain expiration monitoring result computed (monitoring_id=%s status=%s)",
+					monitoring.ID,
+					status,
+				)
+				if err := r.client.PostMonitoringResponse(ctx, monitor.MonitoringResponsePayload{
+					MonitoringID:   monitoring.ID,
+					Status:         status,
+					ResponseTime:   nil,
+					HTTPStatusCode: nil,
+				}); err != nil {
+					r.logger.Printf("Failed to post domain expiration response result (monitoring_id=%s): %v", monitoring.ID, err)
+				}
+				if hasDomainPayload {
+					if err := r.client.PostDomainResult(ctx, domainPayload); err != nil {
+						r.logger.Printf("Failed to post domain expiration result (monitoring_id=%s): %v", monitoring.ID, err)
+					}
+				}
+			}
+		}()
+	}
+
+	for _, monitoring := range monitorings {
+		if monitoring.Type != monitor.TypeDomainExpiration {
+			skippedUnsupported++
+			r.logger.Printf(
+				"Skipping unsupported domain expiration monitoring (monitoring_id=%s type=%s)",
+				monitoring.ID,
+				monitoring.Type,
+			)
+			continue
+		}
+
+		if monitoring.MaintenanceActive {
+			skippedMaintenance++
+			if err := r.client.PostMonitoringResponse(ctx, monitor.MonitoringResponsePayload{
+				MonitoringID:   monitoring.ID,
+				Status:         monitor.StatusUnknown,
+				ResponseTime:   nil,
+				HTTPStatusCode: nil,
+			}); err != nil {
+				r.logger.Printf("Failed to post maintenance domain expiration response result (monitoring_id=%s): %v", monitoring.ID, err)
+			}
+			continue
+		}
+
+		dispatched++
+		jobs <- monitoring
+	}
+	close(jobs)
+	workers.Wait()
+
+	r.logger.Printf(
+		"Domain expiration monitoring dispatch done. total=%d dispatched=%d skipped_maintenance=%d skipped_unsupported=%d",
+		len(monitorings),
+		dispatched,
+		skippedMaintenance,
+		skippedUnsupported,
+	)
+
+	return nil
+}
+
 func (r *Runner) RunMonitoring(ctx context.Context) error {
 	r.logger.Println("Dispatching all monitoring jobs...")
 
-	var responseErr error
-	var sslErr error
+	type phaseResult struct {
+		name string
+		err  error
+	}
+
+	results := make(chan phaseResult, 3)
 	var phases sync.WaitGroup
-	phases.Add(2)
+	phases.Add(3)
 
 	go func() {
 		defer phases.Done()
-		responseErr = r.runResponse(ctx)
+		results <- phaseResult{name: "response", err: r.runResponse(ctx)}
 	}()
 
 	go func() {
 		defer phases.Done()
-		sslErr = r.runSSL(ctx)
+		results <- phaseResult{name: "SSL", err: r.runSSL(ctx)}
+	}()
+
+	go func() {
+		defer phases.Done()
+		results <- phaseResult{name: "domain expiration", err: r.runDomainExpiration(ctx)}
 	}()
 
 	phases.Wait()
+	close(results)
 
-	if responseErr != nil {
-		r.logger.Printf("response monitoring phase failed: %v", responseErr)
-	}
-	if sslErr != nil {
-		r.logger.Printf("SSL monitoring phase failed: %v", sslErr)
+	for result := range results {
+		if result.err != nil {
+			r.logger.Printf("%s monitoring phase failed: %v", result.name, result.err)
+		}
 	}
 
 	r.logger.Println("All monitoring jobs have been dispatched successfully.")
@@ -552,6 +664,45 @@ func (r *Runner) crawlMonitoringSSL(monitoring monitor.Monitoring) monitor.SSLRe
 	}
 
 	return payload
+}
+
+func (r *Runner) crawlDomainExpiration(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, monitor.DomainResultPayload, bool) {
+	lookup := r.domainLookup
+	if lookup == nil {
+		lookup = domainlookup.New(10 * time.Second)
+	}
+
+	result, err := lookup.Lookup(ctx, monitoring.Target)
+	if err != nil {
+		if domainlookup.IsTemporary(err) {
+			return monitor.StatusUnknown, monitor.DomainResultPayload{}, false
+		}
+		now := time.Now().UTC()
+		return monitor.StatusDown, monitor.DomainResultPayload{
+			MonitoringID: monitoring.ID,
+			IsValid:      false,
+			CheckedAt:    now,
+		}, true
+	}
+
+	checkedAt := result.CheckedAt
+	if checkedAt.IsZero() {
+		checkedAt = time.Now().UTC()
+	}
+
+	isValid := result.Registered && result.ExpiresAt != nil && result.ExpiresAt.After(checkedAt.Add(30*24*time.Hour))
+	status := monitor.StatusDown
+	if isValid {
+		status = monitor.StatusUp
+	}
+
+	return status, monitor.DomainResultPayload{
+		MonitoringID: monitoring.ID,
+		IsValid:      isValid,
+		ExpiresAt:    result.ExpiresAt,
+		Registrar:    result.Registrar,
+		CheckedAt:    checkedAt,
+	}, true
 }
 
 func normalizeHeaders(rawHeaders any) map[string]string {

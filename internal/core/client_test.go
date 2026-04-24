@@ -273,6 +273,59 @@ func TestPostSSLResultPayloadShape(t *testing.T) {
 	}
 }
 
+func TestPostDomainResultPayloadShape(t *testing.T) {
+	t.Parallel()
+
+	var gotInstanceCode string
+	var body map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/internal/domain-results" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+
+		gotInstanceCode = request.Header.Get("X-INSTANCE-CODE")
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode payload: %v", err)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "secret-key", "de-1")
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	expiresAt := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	err := client.PostDomainResult(context.Background(), monitor.DomainResultPayload{
+		MonitoringID: "domain-1",
+		IsValid:      true,
+		ExpiresAt:    &expiresAt,
+		Registrar:    ptr("Example Registrar"),
+		CheckedAt:    now,
+	})
+	if err != nil {
+		t.Fatalf("PostDomainResult failed: %v", err)
+	}
+
+	if gotInstanceCode != "de-1" {
+		t.Fatalf("expected instance code de-1, got %q", gotInstanceCode)
+	}
+	if body["monitoring_id"] != "domain-1" {
+		t.Fatalf("expected monitoring_id=domain-1, got %#v", body["monitoring_id"])
+	}
+	if body["is_valid"] != true {
+		t.Fatalf("expected is_valid=true, got %#v", body["is_valid"])
+	}
+	if body["registrar"] != "Example Registrar" {
+		t.Fatalf("expected registrar=Example Registrar, got %#v", body["registrar"])
+	}
+	if body["expires_at"] != "2026-07-23T12:00:00Z" {
+		t.Fatalf("expected expires_at RFC3339, got %#v", body["expires_at"])
+	}
+	if body["checked_at"] != "2026-04-24T12:00:00Z" {
+		t.Fatalf("expected checked_at RFC3339, got %#v", body["checked_at"])
+	}
+}
+
 func TestGetMonitoringsReturnsStatusError(t *testing.T) {
 	t.Parallel()
 

@@ -11,11 +11,12 @@ import (
 type Type string
 
 const (
-	TypeHTTP      Type = "http"
-	TypePing      Type = "ping"
-	TypeKeyword   Type = "keyword"
-	TypePort      Type = "port"
-	TypeHeartbeat Type = "heartbeat"
+	TypeHTTP             Type = "http"
+	TypePing             Type = "ping"
+	TypeKeyword          Type = "keyword"
+	TypePort             Type = "port"
+	TypeHeartbeat        Type = "heartbeat"
+	TypeDomainExpiration Type = "domain_expiration"
 )
 
 type Status string
@@ -164,6 +165,14 @@ type SSLResultPayload struct {
 	ExpiresAt    *time.Time `json:"expires_at"`
 	Issuer       *string    `json:"issuer"`
 	IssuedAt     *time.Time `json:"issued_at"`
+}
+
+type DomainResultPayload struct {
+	MonitoringID string     `json:"monitoring_id"`
+	IsValid      bool       `json:"is_valid"`
+	ExpiresAt    *time.Time `json:"expires_at"`
+	Registrar    *string    `json:"registrar"`
+	CheckedAt    time.Time  `json:"checked_at"`
 }
 
 func parseStringFlexible(value any, field string) (string, error) {
