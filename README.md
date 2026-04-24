@@ -13,9 +13,10 @@ It is built to stay compatible with the current core integration while improving
   - `GET /api/v1/internal/monitorings`
   - `POST /api/v1/internal/monitoring-responses`
   - `POST /api/v1/internal/ssl-results`
+  - `POST /api/v1/internal/domain-results`
   - `X-INSTANCE-CODE` + `X-API-KEY` header authentication
 - **Parallel Monitoring Execution**
-  - Response and SSL phases run in parallel
+  - Response, SSL, and domain expiration phases run in parallel
   - Worker-based parallel processing for monitoring jobs
 - **Simple Operations**
   - Docker-first local and production setup

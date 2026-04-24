@@ -17,8 +17,22 @@ import (
 
 	"github.com/m-breuer/webguard-instance-v2/internal/config"
 	"github.com/m-breuer/webguard-instance-v2/internal/core"
+	"github.com/m-breuer/webguard-instance-v2/internal/domainlookup"
 	"github.com/m-breuer/webguard-instance-v2/internal/monitor"
 )
+
+type staticDomainLookup struct {
+	result domainlookup.Result
+	err    error
+}
+
+func (s staticDomainLookup) Lookup(_ context.Context, target string) (domainlookup.Result, error) {
+	result := s.result
+	if result.Domain == "" {
+		result.Domain = target
+	}
+	return result, s.err
+}
 
 func TestNormalizeHeaders(t *testing.T) {
 	t.Parallel()
@@ -499,6 +513,275 @@ func TestRunSSLPostsResults(t *testing.T) {
 	}
 	if postedSSL[0].MonitoringID != "3" {
 		t.Fatalf("unexpected monitoring id: %s", postedSSL[0].MonitoringID)
+	}
+}
+
+func TestRunDomainExpirationPostsUpResponseAndMetadata(t *testing.T) {
+	t.Parallel()
+
+	checkedAt := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	expiresAt := checkedAt.Add(60 * 24 * time.Hour)
+	registrar := "Example Registrar"
+	client := &fakeCoreClient{
+		domainMonitorings: []monitor.Monitoring{
+			{
+				ID:     "domain-1",
+				Type:   monitor.TypeDomainExpiration,
+				Target: "Example.COM.",
+			},
+		},
+	}
+
+	r := New(client, config.Config{
+		WebGuardLocation:    "de-1",
+		QueueDefaultWorkers: 1,
+	}, log.New(io.Discard, "", 0))
+	r.domainLookup = staticDomainLookup{
+		result: domainlookup.Result{
+			Domain:     "example.com",
+			Registered: true,
+			ExpiresAt:  &expiresAt,
+			Registrar:  &registrar,
+			CheckedAt:  checkedAt,
+		},
+	}
+
+	if err := r.runDomainExpiration(context.Background()); err != nil {
+		t.Fatalf("runDomainExpiration failed: %v", err)
+	}
+
+	postedResponses := client.snapshotPostedResponses()
+	if len(postedResponses) != 1 {
+		t.Fatalf("expected one response result, got %d", len(postedResponses))
+	}
+	if postedResponses[0].Status != monitor.StatusUp {
+		t.Fatalf("expected up response, got %s", postedResponses[0].Status)
+	}
+	if postedResponses[0].HTTPStatusCode != nil {
+		t.Fatalf("expected nil http status code")
+	}
+
+	postedDomains := client.snapshotPostedDomains()
+	if len(postedDomains) != 1 {
+		t.Fatalf("expected one domain result, got %d", len(postedDomains))
+	}
+	if !postedDomains[0].IsValid {
+		t.Fatalf("expected valid domain result")
+	}
+	if postedDomains[0].ExpiresAt == nil || !postedDomains[0].ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("unexpected expiration date: %#v", postedDomains[0].ExpiresAt)
+	}
+	if postedDomains[0].Registrar == nil || *postedDomains[0].Registrar != registrar {
+		t.Fatalf("unexpected registrar: %#v", postedDomains[0].Registrar)
+	}
+	if !postedDomains[0].CheckedAt.Equal(checkedAt) {
+		t.Fatalf("unexpected checked_at: %s", postedDomains[0].CheckedAt)
+	}
+}
+
+func TestRunDomainExpirationExpiringWithinThirtyDaysIsDown(t *testing.T) {
+	t.Parallel()
+
+	checkedAt := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	expiresAt := checkedAt.Add(30 * 24 * time.Hour)
+	client := &fakeCoreClient{
+		domainMonitorings: []monitor.Monitoring{
+			{
+				ID:     "domain-2",
+				Type:   monitor.TypeDomainExpiration,
+				Target: "example.com",
+			},
+		},
+	}
+
+	r := New(client, config.Config{
+		WebGuardLocation:    "de-1",
+		QueueDefaultWorkers: 1,
+	}, log.New(io.Discard, "", 0))
+	r.domainLookup = staticDomainLookup{
+		result: domainlookup.Result{
+			Registered: true,
+			ExpiresAt:  &expiresAt,
+			CheckedAt:  checkedAt,
+		},
+	}
+
+	if err := r.runDomainExpiration(context.Background()); err != nil {
+		t.Fatalf("runDomainExpiration failed: %v", err)
+	}
+
+	postedResponses := client.snapshotPostedResponses()
+	if len(postedResponses) != 1 {
+		t.Fatalf("expected one response result, got %d", len(postedResponses))
+	}
+	if postedResponses[0].Status != monitor.StatusDown {
+		t.Fatalf("expected down response, got %s", postedResponses[0].Status)
+	}
+
+	postedDomains := client.snapshotPostedDomains()
+	if len(postedDomains) != 1 {
+		t.Fatalf("expected one domain result, got %d", len(postedDomains))
+	}
+	if postedDomains[0].IsValid {
+		t.Fatalf("expected invalid domain result")
+	}
+}
+
+func TestRunDomainExpirationTemporaryLookupFailurePostsUnknownOnly(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCoreClient{
+		domainMonitorings: []monitor.Monitoring{
+			{
+				ID:     "domain-3",
+				Type:   monitor.TypeDomainExpiration,
+				Target: "example.com",
+			},
+		},
+	}
+
+	r := New(client, config.Config{
+		WebGuardLocation:    "de-1",
+		QueueDefaultWorkers: 1,
+	}, log.New(io.Discard, "", 0))
+	r.domainLookup = staticDomainLookup{
+		err: &domainlookup.TemporaryError{Err: errors.New("timeout")},
+	}
+
+	if err := r.runDomainExpiration(context.Background()); err != nil {
+		t.Fatalf("runDomainExpiration failed: %v", err)
+	}
+
+	postedResponses := client.snapshotPostedResponses()
+	if len(postedResponses) != 1 {
+		t.Fatalf("expected one response result, got %d", len(postedResponses))
+	}
+	if postedResponses[0].Status != monitor.StatusUnknown {
+		t.Fatalf("expected unknown response, got %s", postedResponses[0].Status)
+	}
+	if postedDomains := client.snapshotPostedDomains(); len(postedDomains) != 0 {
+		t.Fatalf("expected no domain result for temporary failure, got %d", len(postedDomains))
+	}
+}
+
+func TestRunDomainExpirationMaintenancePostsUnknownWithoutLookup(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCoreClient{
+		domainMonitorings: []monitor.Monitoring{
+			{
+				ID:                "domain-maintenance",
+				Type:              monitor.TypeDomainExpiration,
+				Target:            "example.com",
+				MaintenanceActive: true,
+			},
+		},
+	}
+
+	r := New(client, config.Config{
+		WebGuardLocation:    "de-1",
+		QueueDefaultWorkers: 1,
+	}, log.New(io.Discard, "", 0))
+	r.domainLookup = staticDomainLookup{
+		err: errors.New("lookup should not run"),
+	}
+
+	if err := r.runDomainExpiration(context.Background()); err != nil {
+		t.Fatalf("runDomainExpiration failed: %v", err)
+	}
+
+	postedResponses := client.snapshotPostedResponses()
+	if len(postedResponses) != 1 {
+		t.Fatalf("expected one response result, got %d", len(postedResponses))
+	}
+	if postedResponses[0].Status != monitor.StatusUnknown {
+		t.Fatalf("expected unknown maintenance response, got %s", postedResponses[0].Status)
+	}
+	if postedDomains := client.snapshotPostedDomains(); len(postedDomains) != 0 {
+		t.Fatalf("expected no domain metadata during maintenance, got %d", len(postedDomains))
+	}
+}
+
+func TestRunDomainExpirationUsesCoreAPIEndpoints(t *testing.T) {
+	t.Parallel()
+
+	responseCh := make(chan monitor.MonitoringResponsePayload, 1)
+	domainCh := make(chan monitor.DomainResultPayload, 1)
+	checkedAt := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	expiresAt := checkedAt.Add(90 * 24 * time.Hour)
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-INSTANCE-CODE") != "de-1" {
+			http.Error(writer, "missing instance code", http.StatusBadRequest)
+			return
+		}
+		if request.Header.Get("X-API-KEY") != "secret-key" {
+			http.Error(writer, "missing api key", http.StatusBadRequest)
+			return
+		}
+
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/internal/monitorings":
+			if request.URL.Query().Get("location") != "de-1" || request.URL.Query().Get("type") != "domain_expiration" {
+				http.Error(writer, "unexpected query", http.StatusBadRequest)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`[{"id":"domain-api","type":"domain_expiration","target":"example.com","maintenance_active":false}]`))
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/internal/monitoring-responses":
+			var payload monitor.MonitoringResponsePayload
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			responseCh <- payload
+			writer.WriteHeader(http.StatusNoContent)
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/internal/domain-results":
+			var payload monitor.DomainResultPayload
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			domainCh <- payload
+			writer.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	r := New(core.NewClient(server.URL, "secret-key", "de-1"), config.Config{
+		WebGuardLocation:    "de-1",
+		QueueDefaultWorkers: 1,
+	}, log.New(io.Discard, "", 0))
+	r.domainLookup = staticDomainLookup{
+		result: domainlookup.Result{
+			Registered: true,
+			ExpiresAt:  &expiresAt,
+			CheckedAt:  checkedAt,
+		},
+	}
+
+	if err := r.runDomainExpiration(context.Background()); err != nil {
+		t.Fatalf("runDomainExpiration failed: %v", err)
+	}
+
+	select {
+	case payload := <-responseCh:
+		if payload.MonitoringID != "domain-api" || payload.Status != monitor.StatusUp {
+			t.Fatalf("unexpected response payload: %#v", payload)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("expected monitoring response post")
+	}
+
+	select {
+	case payload := <-domainCh:
+		if payload.MonitoringID != "domain-api" || !payload.IsValid {
+			t.Fatalf("unexpected domain payload: %#v", payload)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("expected domain result post")
 	}
 }
 

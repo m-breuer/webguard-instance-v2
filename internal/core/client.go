@@ -127,6 +127,15 @@ func (c *Client) PostSSLResult(ctx context.Context, payload monitor.SSLResultPay
 	return c.doJSON(request, nil)
 }
 
+func (c *Client) PostDomainResult(ctx context.Context, payload monitor.DomainResultPayload) error {
+	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/domain-results", nil, payload)
+	if err != nil {
+		return err
+	}
+
+	return c.doJSON(request, nil)
+}
+
 func (c *Client) newRequest(ctx context.Context, method, path string, query url.Values, body any) (*http.Request, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("WEBGUARD_CORE_API_URL is empty")
