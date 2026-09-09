@@ -109,6 +109,9 @@ Runtime settings:
 
 See `.env.example` for full defaults.
 
+Production deployment and rollback guidance is documented in
+[the production instance runbook](PRODUCTION_RUNBOOK.md).
+
 Core supplies `check_interval_seconds` with each monitoring. The worker honors
 that per-monitoring minimum start-to-start interval for regular response checks
 and reports the executed value with the result. HTTP and keyword checks currently
