@@ -226,18 +226,38 @@ func maintenanceExecution(phase ExecutionPhase, monitoringID string) Execution {
 	return responseExecution(monitoringID, monitor.StatusUnknown, nil, nil)
 }
 
-func (r *MonitoringService) publishExecution(ctx context.Context, execution Execution) {
+func (r *MonitoringService) publishExecution(ctx context.Context, execution Execution, executionKeys ...string) {
+	if execution.Response == nil && execution.SSL == nil && execution.Domain == nil {
+		return
+	}
+
+	idempotencyKey := ""
+	if len(executionKeys) > 0 && isUUIDv4(executionKeys[0]) {
+		idempotencyKey = executionKeys[0]
+	}
+	if idempotencyKey == "" {
+		var err error
+		idempotencyKey, err = newIdempotencyKey()
+		if err != nil {
+			r.logger.Printf("Failed to generate callback idempotency key: %v", err)
+			return
+		}
+	}
+
 	if execution.Response != nil {
+		execution.Response.IdempotencyKey = idempotencyKey
 		if err := r.client.PostMonitoringResponse(ctx, *execution.Response); err != nil {
 			r.logger.Printf("Failed to post response result (monitoring_id=%s): %v", execution.Response.MonitoringID, err)
 		}
 	}
 	if execution.SSL != nil {
+		execution.SSL.IdempotencyKey = idempotencyKey
 		if err := r.client.PostSSLResult(ctx, *execution.SSL); err != nil {
 			r.logger.Printf("Failed to post SSL result (monitoring_id=%s): %v", execution.SSL.MonitoringID, err)
 		}
 	}
 	if execution.Domain != nil {
+		execution.Domain.IdempotencyKey = idempotencyKey
 		if err := r.client.PostDomainResult(ctx, *execution.Domain); err != nil {
 			r.logger.Printf("Failed to post domain expiration result (monitoring_id=%s): %v", execution.Domain.MonitoringID, err)
 		}

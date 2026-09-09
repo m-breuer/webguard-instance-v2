@@ -126,6 +126,19 @@ published by WebGuard Core as the
 [WebGuard Instance API contract](https://github.com/marcel-breuer/webguard/blob/main/docs/integrations/webguard-instance-api.md).
 The adapter accepts only this instance path; it never calls browser routes.
 
+### Callback retries and idempotency
+
+Each executed monitoring job carries one UUID v4 callback identifier. The
+worker sends it as the `Idempotency-Key` header on monitoring, SSL, and domain
+result callbacks and reuses it for bounded transport/5xx retries. The key is
+never included in the JSON payload and contains no target or credential data.
+
+For leased jobs, a valid Core-issued execution key is reused; older or missing
+lease keys are replaced with a worker-generated UUID v4. Independent executions
+receive different keys. Core can therefore replay an ambiguous callback safely
+without storing a duplicate observation or repeating its side effects. Older
+Core versions ignore the additive header and remain compatible.
+
 ## Operations
 
 - `GET /livez` only confirms that the process can serve HTTP. Docker uses this

@@ -162,6 +162,34 @@ func (f *fakeCoreClient) snapshotReleasedJobs() []releasedJob {
 	return append([]releasedJob(nil), f.releasedJobs...)
 }
 
+func TestPublishExecutionUsesOneUUIDv4ForOneExecution(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCoreClient{}
+	runner := newTestService(client, config.Config{}, log.New(io.Discard, "", 0))
+	runner.publishExecution(context.Background(), Execution{
+		Response: &monitor.MonitoringResponsePayload{MonitoringID: "response-1", Status: monitor.StatusUp},
+		Domain:   &monitor.DomainResultPayload{MonitoringID: "domain-1", IsValid: true},
+	})
+
+	responses := client.snapshotPostedResponses()
+	domains := client.snapshotPostedDomains()
+	if len(responses) != 1 || len(domains) != 1 {
+		t.Fatalf("expected one response and domain callback, got responses=%d domains=%d", len(responses), len(domains))
+	}
+	if !isUUIDv4(responses[0].IdempotencyKey) || responses[0].IdempotencyKey != domains[0].IdempotencyKey {
+		t.Fatalf("expected one shared UUIDv4, got response=%q domain=%q", responses[0].IdempotencyKey, domains[0].IdempotencyKey)
+	}
+
+	runner.publishExecution(context.Background(), Execution{
+		Response: &monitor.MonitoringResponsePayload{MonitoringID: "response-2", Status: monitor.StatusUp},
+	})
+	secondResponses := client.snapshotPostedResponses()
+	if len(secondResponses) != 2 || secondResponses[0].IdempotencyKey == secondResponses[1].IdempotencyKey {
+		t.Fatalf("expected independent executions to use different keys: %#v", secondResponses)
+	}
+}
+
 func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T) {
 	t.Parallel()
 
@@ -170,7 +198,7 @@ func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T
 			ID:             "job-response",
 			Phase:          string(PhaseResponse),
 			Attempt:        2,
-			IdempotencyKey: "response-key",
+			IdempotencyKey: "6f3a8bb2-8a66-4c84-91db-5166c9c291c5",
 			Monitoring: monitor.Monitoring{
 				ID: "http-1", Type: monitor.TypeHTTP, Target: "https://example.com",
 			},
@@ -202,6 +230,7 @@ func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T
 		JobLeaseMaxBatch:    4,
 		QueueDefaultWorkers: 2,
 		AllowPrivateTargets: true,
+		JobLeasesDualWrite:  true,
 	}, log.New(io.Discard, "", 0))
 	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
 		return http.StatusOK, "", nil
@@ -229,8 +258,12 @@ func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T
 	if len(completed) != 1 {
 		t.Fatalf("expected one completed job, got %d", len(completed))
 	}
-	if completed[0].jobID != "job-response" || completed[0].idempotencyKey != "response-key" || completed[0].request.Attempt != 2 {
+	if completed[0].jobID != "job-response" || completed[0].idempotencyKey != "6f3a8bb2-8a66-4c84-91db-5166c9c291c5" || completed[0].request.Attempt != 2 {
 		t.Fatalf("unexpected completion: %#v", completed[0])
+	}
+	postedResponses := client.snapshotPostedResponses()
+	if len(postedResponses) != 1 || postedResponses[0].IdempotencyKey != "6f3a8bb2-8a66-4c84-91db-5166c9c291c5" {
+		t.Fatalf("expected callback to reuse the claimed execution key, got %#v", postedResponses)
 	}
 	if completed[0].request.Result.Response == nil || completed[0].request.Result.Response.MonitoringID != "http-1" {
 		t.Fatalf("expected response result, got %#v", completed[0].request.Result)

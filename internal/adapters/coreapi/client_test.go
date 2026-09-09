@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -14,6 +15,12 @@ import (
 	"github.com/marcel-breuer/webguard-instance/internal/application"
 	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
 
 func TestGetMonitoringsIncludesHeadersAndQuery(t *testing.T) {
 	t.Parallel()
@@ -122,6 +129,134 @@ func TestClientUsesConfiguredInstancePath(t *testing.T) {
 	}
 	if !slices.Equal(paths, expectedPaths) {
 		t.Fatalf("unexpected instance paths: got %v, want %v", paths, expectedPaths)
+	}
+}
+
+func TestCallbackResultsSendIdempotencyKeyWithoutChangingPayloadShape(t *testing.T) {
+	t.Parallel()
+
+	const idempotencyKey = "6f3a8bb2-8a66-4c84-91db-5166c9c291c5"
+	paths := []string{
+		"/api/instances/monitoring-responses",
+		"/api/instances/ssl-results",
+		"/api/instances/domain-results",
+	}
+	keys := make(map[string]string, len(paths))
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := keys[request.URL.Path]; ok {
+			t.Fatalf("unexpected duplicate callback path: %s", request.URL.Path)
+		}
+		keys[request.URL.Path] = request.Header.Get("Idempotency-Key")
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode callback payload: %v", err)
+		}
+		if _, ok := body["idempotency_key"]; ok {
+			t.Fatalf("idempotency key must remain a header, got payload %#v", body)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "secret-key", "de-1")
+	if err := client.PostMonitoringResponse(context.Background(), monitor.MonitoringResponsePayload{
+		MonitoringID: "response-1", IdempotencyKey: idempotencyKey, Status: monitor.StatusUp,
+	}); err != nil {
+		t.Fatalf("PostMonitoringResponse failed: %v", err)
+	}
+	if err := client.PostSSLResult(context.Background(), monitor.SSLResultPayload{
+		MonitoringID: "ssl-1", IdempotencyKey: idempotencyKey, IsValid: true,
+	}); err != nil {
+		t.Fatalf("PostSSLResult failed: %v", err)
+	}
+	if err := client.PostDomainResult(context.Background(), monitor.DomainResultPayload{
+		MonitoringID: "domain-1", IdempotencyKey: idempotencyKey, IsValid: true,
+	}); err != nil {
+		t.Fatalf("PostDomainResult failed: %v", err)
+	}
+
+	for _, path := range paths {
+		if keys[path] != idempotencyKey {
+			t.Fatalf("expected idempotency key %q on %s, got %q", idempotencyKey, path, keys[path])
+		}
+	}
+}
+
+func TestCallbackResultRetriesReuseIdempotencyKeyAfterServerError(t *testing.T) {
+	t.Parallel()
+
+	const idempotencyKey = "39d4e4b3-2b2e-446c-9f79-58f6c7e35099"
+	requestCount := 0
+	keys := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestCount++
+		keys = append(keys, request.Header.Get("Idempotency-Key"))
+		if requestCount == 1 {
+			writer.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "secret-key", "de-1")
+	if err := client.PostMonitoringResponse(context.Background(), monitor.MonitoringResponsePayload{
+		MonitoringID: "response-1", IdempotencyKey: idempotencyKey, Status: monitor.StatusUp,
+	}); err != nil {
+		t.Fatalf("PostMonitoringResponse failed: %v", err)
+	}
+	if requestCount != 2 || len(keys) != 2 || keys[0] != idempotencyKey || keys[1] != idempotencyKey {
+		t.Fatalf("expected two attempts with the same key, got count=%d keys=%v", requestCount, keys)
+	}
+}
+
+func TestCallbackResultRetriesTransportTimeoutWithTheSameIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	const idempotencyKey = "39d4e4b3-2b2e-446c-9f79-58f6c7e35099"
+	attempts := 0
+	keys := make([]string, 0, 2)
+	client := NewClient("https://core.example.test", "secret-key", "de-1")
+	client.SetHTTPClient(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		keys = append(keys, request.Header.Get("Idempotency-Key"))
+		if attempts == 1 {
+			return nil, context.DeadlineExceeded
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    request,
+		}, nil
+	})})
+
+	if err := client.PostMonitoringResponse(context.Background(), monitor.MonitoringResponsePayload{
+		MonitoringID: "response-1", IdempotencyKey: idempotencyKey, Status: monitor.StatusUp,
+	}); err != nil {
+		t.Fatalf("PostMonitoringResponse failed: %v", err)
+	}
+	if attempts != 2 || len(keys) != 2 || keys[0] != idempotencyKey || keys[1] != idempotencyKey {
+		t.Fatalf("expected two timeout attempts with the same key, got attempts=%d keys=%v", attempts, keys)
+	}
+}
+
+func TestCallbackResultDoesNotRetryClientErrors(t *testing.T) {
+	t.Parallel()
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		writer.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "secret-key", "de-1")
+	err := client.PostMonitoringResponse(context.Background(), monitor.MonitoringResponsePayload{
+		MonitoringID: "response-1", IdempotencyKey: "6f3a8bb2-8a66-4c84-91db-5166c9c291c5", Status: monitor.StatusUp,
+	})
+	if err == nil || requestCount != 1 {
+		t.Fatalf("expected one client-error attempt, got err=%v count=%d", err, requestCount)
 	}
 }
 
