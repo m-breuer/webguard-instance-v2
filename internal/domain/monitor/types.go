@@ -186,6 +186,7 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 
 type MonitoringResponsePayload struct {
 	MonitoringID         string          `json:"monitoring_id"`
+	IdempotencyKey       string          `json:"-"`
 	Status               Status          `json:"status"`
 	ResponseTime         *float64        `json:"response_time"`
 	HTTPStatusCode       *int            `json:"http_status_code"`
@@ -212,19 +213,21 @@ type RawObservation struct {
 }
 
 type SSLResultPayload struct {
-	MonitoringID string     `json:"monitoring_id"`
-	IsValid      bool       `json:"is_valid"`
-	ExpiresAt    *time.Time `json:"expires_at"`
-	Issuer       *string    `json:"issuer"`
-	IssuedAt     *time.Time `json:"issued_at"`
+	MonitoringID   string     `json:"monitoring_id"`
+	IdempotencyKey string     `json:"-"`
+	IsValid        bool       `json:"is_valid"`
+	ExpiresAt      *time.Time `json:"expires_at"`
+	Issuer         *string    `json:"issuer"`
+	IssuedAt       *time.Time `json:"issued_at"`
 }
 
 type DomainResultPayload struct {
-	MonitoringID string     `json:"monitoring_id"`
-	IsValid      bool       `json:"is_valid"`
-	ExpiresAt    *time.Time `json:"expires_at"`
-	Registrar    *string    `json:"registrar"`
-	CheckedAt    time.Time  `json:"checked_at"`
+	MonitoringID   string     `json:"monitoring_id"`
+	IdempotencyKey string     `json:"-"`
+	IsValid        bool       `json:"is_valid"`
+	ExpiresAt      *time.Time `json:"expires_at"`
+	Registrar      *string    `json:"registrar"`
+	CheckedAt      time.Time  `json:"checked_at"`
 }
 
 // ClaimedJob is one unit of monitoring work that Core has leased to this

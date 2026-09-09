@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,6 +34,18 @@ type Client struct {
 type HTTPStatusError struct {
 	StatusCode int
 	Body       string
+}
+
+type transportError struct {
+	err error
+}
+
+func (e *transportError) Error() string {
+	return e.err.Error()
+}
+
+func (e *transportError) Unwrap() error {
+	return e.err
 }
 
 func (e *HTTPStatusError) Error() string {
@@ -141,30 +154,15 @@ func (c *Client) getMonitorings(ctx context.Context, location string, monitoring
 }
 
 func (c *Client) PostMonitoringResponse(ctx context.Context, payload monitor.MonitoringResponsePayload) error {
-	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/monitoring-responses"), nil, payload)
-	if err != nil {
-		return err
-	}
-
-	return c.doJSON(request, nil, "post_monitoring_response")
+	return c.postCallbackJSON(ctx, "/monitoring-responses", "post_monitoring_response", payload.IdempotencyKey, payload)
 }
 
 func (c *Client) PostSSLResult(ctx context.Context, payload monitor.SSLResultPayload) error {
-	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/ssl-results"), nil, payload)
-	if err != nil {
-		return err
-	}
-
-	return c.doJSON(request, nil, "post_ssl_result")
+	return c.postCallbackJSON(ctx, "/ssl-results", "post_ssl_result", payload.IdempotencyKey, payload)
 }
 
 func (c *Client) PostDomainResult(ctx context.Context, payload monitor.DomainResultPayload) error {
-	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/domain-results"), nil, payload)
-	if err != nil {
-		return err
-	}
-
-	return c.doJSON(request, nil, "post_domain_result")
+	return c.postCallbackJSON(ctx, "/domain-results", "post_domain_result", payload.IdempotencyKey, payload)
 }
 
 func (c *Client) ClaimMonitoringJobs(ctx context.Context, payload monitor.ClaimMonitoringJobsRequest) ([]monitor.ClaimedJob, error) {
@@ -281,6 +279,48 @@ func (c *Client) instanceAPIEndpoint(suffix string) string {
 	return c.instanceAPIPath + suffix
 }
 
+func (c *Client) postCallbackJSON(ctx context.Context, path, operation, idempotencyKey string, payload any) error {
+	maxAttempts := 1
+	if strings.TrimSpace(idempotencyKey) != "" {
+		maxAttempts = 2
+	}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint(path), nil, payload)
+		if err != nil {
+			return err
+		}
+		if idempotencyKey != "" {
+			request.Header.Set("Idempotency-Key", idempotencyKey)
+		}
+
+		err = c.doJSON(request, nil, operation)
+		if err == nil || attempt == maxAttempts-1 || ctx.Err() != nil || !isRetryableCallbackError(err) {
+			return err
+		}
+
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	return nil
+}
+
+func isRetryableCallbackError(err error) bool {
+	var statusError *HTTPStatusError
+	if errors.As(err, &statusError) {
+		return statusError.StatusCode >= http.StatusInternalServerError
+	}
+
+	var requestError *transportError
+	return errors.As(err, &requestError)
+}
+
 func normalizeInstanceAPIPath(instanceAPIPath string) (string, error) {
 	normalized := "/" + strings.Trim(strings.TrimSpace(instanceAPIPath), "/")
 	switch normalized {
@@ -298,13 +338,13 @@ func (c *Client) doJSON(request *http.Request, out any, operation string) (resul
 	}()
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return err
+		return &transportError{err: err}
 	}
 	defer response.Body.Close()
 
 	raw, err := readLimitedBody(response.Body, maxResponseBodyBytes)
 	if err != nil {
-		return err
+		return &transportError{err: err}
 	}
 
 	if response.StatusCode >= http.StatusBadRequest {

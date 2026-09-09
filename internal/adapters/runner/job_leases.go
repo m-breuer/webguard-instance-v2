@@ -108,7 +108,7 @@ func leaseMetricPhase(phase string) string {
 
 func (r *MonitoringService) completeClaimedJob(ctx context.Context, job monitor.ClaimedJob, execution Execution) {
 	if r.cfg.JobLeasesDualWrite {
-		r.publishExecution(ctx, execution)
+		r.publishExecution(ctx, execution, job.IdempotencyKey)
 	}
 
 	err := r.client.CompleteMonitoringJob(ctx, job.ID, job.IdempotencyKey, monitor.CompleteMonitoringJobRequest{
